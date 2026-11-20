@@ -157,7 +157,11 @@ case "$cmd" in
     id="$1"; status="$(tr '[:lower:]' '[:upper:]' <<<"$2")"; hours="$3"; shift 3
     code="$(api POST /api/demo/tickets "{\"customerId\":$(json_str "$id"),\"category\":\"TECHNICAL\",\"subject\":$(json_str "$*"),\"status\":\"$status\",\"slaHoursFromNow\":$hours}")"
     [[ "$code" == 200 ]] || { red "HTTP $code: $(cat "$TMP")"; exit 1; }
-    tkt="$(field ticketId)"; echo "Created $tkt (SLA breached: $(field slaBreached)). Waiting for it to reach Redis..."
+    tkt="$(field ticketId)"
+    if [[ "$(field duplicate)" == "true" ]]; then
+      green "Not created: open ticket $tkt already covers this problem ($(field matchReason))"; exit 0
+    fi
+    echo "Created $tkt (SLA breached: $(field slaBreached)). Waiting for it to reach Redis..."
     for ((i = 0; i < 40; i++)); do
       if [[ "$(api GET "/api/demo/profile/$id")" == 200 ]] && grep -q "\"$tkt\"" "$TMP"; then green "In Redis"; exit 0; fi
       sleep 0.5

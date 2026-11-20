@@ -7,6 +7,7 @@ import io.github.harishnoone.servicingagent.model.CustomerProfile.LedgerEntry;
 import io.github.harishnoone.servicingagent.model.CustomerProfile.TicketSummary;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -40,6 +41,11 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * <p>Routing is by the envelope's {@code source.table}, so records redelivered from
  * {@code -retry-N} topics are handled identically to the original topic.
+ *
+ * <p><b>Logging (FR-7.5):</b> every applied event logs one INFO line
+ * ({@code CDC applied table=... id=... created|updated}) with Debezium op, LSN, topic and
+ * offset, and {@code customerId} is in the MDC while the event is processed. Only ids are
+ * logged, never names, amounts, descriptions or the payload.
  */
 @Component
 public class IdempotentKafkaConsumer {
@@ -120,17 +126,27 @@ public class IdempotentKafkaConsumer {
                 return;
             }
 
+            String op = envelope.path("op").asText("-");
+            MDC.put("customerId", customerId);
             ReentrantLock lock = locks[Math.floorMod(customerId.hashCode(), LOCK_STRIPES)];
             lock.lock();
             try {
-                switch (table) {
+                String outcome = switch (table) {
                     case "customers"       -> applyCustomer(after, customerId, lsn);
                     case "billing_ledger"  -> applyBilling(after, customerId, lsn);
                     case "support_tickets" -> applyTicket(after, customerId, lsn);
-                    default -> log.warn("Unmapped table '{}' for eventId={}", table, eventId);
+                    default -> {
+                        log.warn("Unmapped table '{}' for eventId={}", table, eventId);
+                        yield null;
+                    }
+                };
+                if (outcome != null) {
+                    log.info("CDC applied table={} id={} {} op={} lsn={} topic={} offset={}",
+                            table, pk, outcome, op, lsn, topic, offset);
                 }
             } finally {
                 lock.unlock();
+                MDC.remove("customerId");
             }
             dedupKey = null; // success: keep the key
         } catch (RuntimeException ex) {
@@ -188,8 +204,9 @@ public class IdempotentKafkaConsumer {
     // Row handlers
     // -------------------------------------------------------------------------
 
-    private void applyCustomer(JsonNode after, String customerId, long lsn) throws Exception {
-        if (isStale("customers", customerId, lsn)) return;
+    /** Each apply method returns {@code "created"} or {@code "updated"}, or {@code null} if the event was stale. */
+    private String applyCustomer(JsonNode after, String customerId, long lsn) throws Exception {
+        if (isStale("customers", customerId, lsn)) return null;
         String key = profileKeyPrefix + customerId;
         CustomerProfile existing = loadProfile(key);
 
@@ -206,11 +223,13 @@ public class IdempotentKafkaConsumer {
 
         saveProfile(key, updated);
         markApplied("customers", customerId, lsn);
+        // A stub created by an earlier billing/ticket event has no name yet; this is the customer's first row.
+        return existing == null || existing.fullName().isBlank() ? "created" : "updated";
     }
 
-    private void applyBilling(JsonNode after, String customerId, long lsn) throws Exception {
+    private String applyBilling(JsonNode after, String customerId, long lsn) throws Exception {
         String invoiceId = after.path("invoice_id").asText("");
-        if (invoiceId.isBlank() || isStale("billing_ledger", invoiceId, lsn)) return;
+        if (invoiceId.isBlank() || isStale("billing_ledger", invoiceId, lsn)) return null;
 
         String key = profileKeyPrefix + customerId;
         CustomerProfile existing = loadOrStub(key, customerId);
@@ -223,7 +242,7 @@ public class IdempotentKafkaConsumer {
                 after.path("description").asText(""));
 
         List<LedgerEntry> charges = new ArrayList<>(existing.recentCharges());
-        charges.removeIf(e -> e.invoiceId().equals(invoiceId));
+        boolean existed = charges.removeIf(e -> e.invoiceId().equals(invoiceId));
         charges.add(0, entry);
         if (charges.size() > MAX_RECENT_CHARGES) {
             charges = new ArrayList<>(charges.subList(0, MAX_RECENT_CHARGES));
@@ -234,11 +253,12 @@ public class IdempotentKafkaConsumer {
                 existing.waiversUsed12m(), Math.max(lsn, existing.lastAppliedLsn()),
                 charges, existing.activeTickets()));
         markApplied("billing_ledger", invoiceId, lsn);
+        return existed ? "updated" : "created";
     }
 
-    private void applyTicket(JsonNode after, String customerId, long lsn) throws Exception {
+    private String applyTicket(JsonNode after, String customerId, long lsn) throws Exception {
         String ticketId = after.path("ticket_id").asText("");
-        if (ticketId.isBlank() || isStale("support_tickets", ticketId, lsn)) return;
+        if (ticketId.isBlank() || isStale("support_tickets", ticketId, lsn)) return null;
 
         String key = profileKeyPrefix + customerId;
         CustomerProfile existing = loadOrStub(key, customerId);
@@ -251,7 +271,7 @@ public class IdempotentKafkaConsumer {
                 after.path("sla_deadline").asText(""));
 
         List<TicketSummary> tickets = new ArrayList<>(existing.activeTickets());
-        tickets.removeIf(t -> t.ticketId().equals(ticketId));
+        boolean existed = tickets.removeIf(t -> t.ticketId().equals(ticketId));
         tickets.add(0, ticket);
 
         saveProfile(key, new CustomerProfile(existing.customerId(), existing.fullName(),
@@ -259,6 +279,7 @@ public class IdempotentKafkaConsumer {
                 existing.waiversUsed12m(), Math.max(lsn, existing.lastAppliedLsn()),
                 existing.recentCharges(), tickets));
         markApplied("support_tickets", ticketId, lsn);
+        return existed ? "updated" : "created";
     }
 
     // -------------------------------------------------------------------------

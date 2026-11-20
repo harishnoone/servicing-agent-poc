@@ -234,6 +234,7 @@ servicing-agent-poc/
 │   │   ├── KnowledgeRetrievalTools.java# @Tool searchPoliciesAndCases() (BM25 + Vector + Authority)
 │   │   ├── DeterministicRulesTools.java# @Tool evaluateWaiverRules()
 │   │   ├── EscalationTools.java        # @Tool escalateWithSummary()
+│   │   ├── TicketMatchTools.java       # @Tool findMatchingOpenTicket(); duplicateOf() for ticket creation (FR-6.3, FR-6.4)
 │   │   └── ReportingTools.java         # @Tool getDeflectionReport()
 │   ├── replay/
 │   │   └── DeterministicReplayAgent.java # Offline planner (NFR-1) driving the same tools
@@ -251,7 +252,7 @@ servicing-agent-poc/
 │   ├── controller/
 │   │   ├── AgentChatController.java    # POST /api/agent/chat & GET /api/agent/reports/kpis
 │   │   ├── AdminOverrideController.java# POST /api/admin/overrides/waiver, GET /api/admin/kafka/dlt, DLT replay
-│   │   ├── DemoMutationController.java # POST /api/demo/mutate, customers, tickets, profile, cache eviction, poison pill
+│   │   ├── DemoMutationController.java # POST /api/demo/mutate, customers, tickets (duplicate-safe), profile, cache eviction, poison pill
 │   │   └── GlobalExceptionHandler.java # Structured 400/403/404 error bodies (FR-2.2)
 │   └── model/
 │       └── AgentTurnReport.java        # Rich JSON report returned to Swagger UI
@@ -399,7 +400,7 @@ Demo: `scripts/demo.ps1 caching [customerId] [turns]` (and `demo.sh caching`) se
 - **Gemini via the OpenAI-compatible endpoint:** base URL `https://generativelanguage.googleapis.com/v1beta/openai`, path `/chat/completions`. Gemini 3 returns `tool_calls[].extra_content.google.thought_signature` and rejects the next request (HTTP 400 "missing a thought_signature") if it is not sent back. Spring AI 1.0 drops the field, so `GeminiThoughtSignatureInterceptor` stores signatures by tool-call id from each response and re-attaches them on the next request (`GeminiCompatConfig`, active only when the base URL is Gemini's). Needed for agentic mode only.
 - **Retries:** `spring.ai.retry` is bounded to 3 attempts on HTTP 429/503 with 1 s, then 2 s waits (the Spring AI default is 10 attempts with waits up to 3 minutes). Quota errors do not recover by waiting: free tier is 20 requests per model per day (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`) and 0 for Pro; a depleted prepaid balance returns HTTP 402.
 - **Client pacing:** `demo.ps1`, `demo.sh` and `demo-smoke.ps1` honour `CHAT_PACE_SECONDS` (minimum gap between chat calls) and, in `demo.ps1`/`demo.sh`, retry a provider-rejected turn once after `CHAT_RETRY_WAIT_SECONDS` (default 30). Server-side throttling (a bulkhead around the model call) is not built; it is a production item.
-- **Logging:** `logback-spring.xml` writes console lines with `[sessionId customerId]` from MDC. `AgentChatController` logs `Turn started` and `Turn finished` (status, latency, tools, citations, LLM round trips and model milliseconds). `LlmCallLoggingInterceptor` logs every model call with HTTP status, duration and raw provider usage, and adds `LLM_ROUND_TRIP #n (HTTP 200)` with its latency to the reasoning trace.
+- **Logging:** `logback-spring.xml` writes console lines with `[sessionId customerId]` from MDC. `AgentChatController` logs `Turn started` and `Turn finished` (status, latency, tools, citations, LLM round trips and model milliseconds). `LlmCallLoggingInterceptor` logs every model call with HTTP status, duration and raw provider usage, and adds `LLM_ROUND_TRIP #n (HTTP 200)` with its latency to the reasoning trace. `IdempotentKafkaConsumer` logs `CDC applied table=... id=... created|updated op=... lsn=... topic=... offset=...` for every applied event with `customerId` in the MDC, ids only (FR-7.5). `DemoMutationController` logs `Duplicate ticket prevented: existing=... reason=...` (FR-6.4).
 
 ---
 ## 5. Docker Compose Container Topology
@@ -539,6 +540,9 @@ Limits of this run: 14 messages, one run per message set, one machine and networ
 The generative rows come from the earlier runs (§6, 4 persona questions, containers), and the decision-model row from a different, larger question set run outside the containers, so the rows are not like for like. A decision call is about 5 to 10 times faster than a single-pass reply, but it does not replace the reply; it would add about 0.3 s to each gated turn.
 
 
+### Why deterministic duplicate-ticket detection instead of letting the LLM decide?
+Whether a ticket is created is a system-of-record write, like a waiver. A model deciding it would give different answers for the same message, could be talked out of it ("this is a new issue, open another ticket"), and in single-pass or offline mode there is no model to ask. `TicketMatchTools` gives the same answer every time with a stated reason (`TICKET_ID`, `ERROR_CODE`, `SAME_SUBJECT`, `SAME_TOPIC`), runs in under 1 ms, and is unit-tested. The model's job is only to word the follow-up. The creation endpoint enforces the rule on its own (warehouse read, row lock), so a duplicate is refused even if a caller skips the agent. Trade-off: topic rules are keyword lists. Two different billing disputes from one customer would be treated as one, and a paraphrased technical problem without a shared code or topic word would not match. The production path is a semantic match (embeddings or the decision model in §9) behind the same rule, still with Java making the final call.
+
 ### Why Virtual Threads (JDK 21) instead of reactive programming?
 Virtual Threads provide the concurrency benefits of reactive I/O (no platform thread starvation under load) with the readability of standard imperative Java.
 
@@ -562,7 +566,7 @@ Virtual Threads provide the concurrency benefits of reactive I/O (no platform th
 
 ## 8. Requirements Traceability & Verification
 
-Status as of 2026-11-20. "Verified" means a test or live check asserts the requirement's own expected values, not just that the code runs. Tests are in `src/test/java`; the live checks are `scripts/demo-smoke.ps1` (22 checks against the running stack) and `scripts/demo.ps1 scenarios` (11 seeded questions).
+Status as of 2026-11-21. "Verified" means a test or live check asserts the requirement's own expected values, not just that the code runs. Tests are in `src/test/java`; the live checks are `scripts/demo-smoke.ps1` (28 checks against the running stack), the per-scenario scripts `scripts/scenarios/01` to `09` (each with its own PASS/FAIL checks) and `scripts/demo.ps1 scenarios` (seeded questions).
 
 | Req | Implementation | Verified by | Status |
 |---|---|---|---|
@@ -585,6 +589,9 @@ Status as of 2026-11-20. "Verified" means a test or live check asserts the requi
 | FR-5.1–5.3 Deterministic rules | `DeterministicRulesTools.evaluate(profile, amount)` | `DeterministicRulesToolsTest`: every reason code incl. $50.00 / 12-month boundaries | Done. Tool is `evaluateWaiverRules(customerId, amount)`; result also carries `explanation` |
 | FR-6.1 Escalation triggers | `EscalationTools` (SLA breach, frustration keywords, confidence < 0.72, agent-forced) | `EscalationToolsTest` (5 cases); seeded Sam/Lena/Priya/Marcus | Done; frustration is a keyword list, not a sentiment model |
 | FR-6.2 Handoff card | `AgentHandoffCard` | `EscalationToolsTest`, `scenario2_slaBreachAndErr504EscalatesWithHandoffCard` | Done |
+| FR-6.3 Existing-ticket recognition | `TicketMatchTools.findMatchingOpenTicket` (deterministic: `TICKET_ID`, `ERROR_CODE`, `SAME_TOPIC`), called by the plan for technical and general messages; registered for agentic mode; fact passed to single-pass synthesis | `TicketMatchToolsTest` (5 cases incl. waiver and policy-question exclusions); `DemoScenariosTest.scenario4_existingTicketIsRecognisedAsFollowUp` and 2 negative cases; live: scenario 5, smoke | Done. Keyword topic rules, not semantic matching |
+| FR-6.4 No duplicate tickets | `DemoMutationController.createTicket` + `TicketMatchTools.duplicateOf` (`ERROR_CODE`, `SAME_SUBJECT`, `SAME_TOPIC`); warehouse read under `SELECT ... FOR UPDATE` on the customer row | `TicketMatchToolsTest` (4 cases); live: duplicate returns TKT-8841 with no new row, a new problem creates a ticket and its repeat returns `SAME_SUBJECT` | Done. Only this endpoint creates tickets; the agent never creates them |
+| FR-7.5 CDC consume logging | `IdempotentKafkaConsumer` `CDC applied` INFO line, `customerId` in MDC | `IdempotentKafkaConsumerTest.logsEveryAppliedEventWithIdsOnly` (all 3 tables, created/updated, no PII, MDC cleared); live `docker logs` | Done |
 | FR-7.1 AgentTurnReport | `AgentChatController` + `TurnState` | `DemoScenariosTest` (all scenarios) | Done |
 | FR-7.2 KPI report + tool | `GET /api/agent/reports/kpis`, `ReportingTools.getDeflectionReport` | `kpiReportAggregatesTurns`; smoke | Done. Deflection = turns resolved without escalation, not the 72 h zero-re-contact KPI; the tool is only reachable in LLM mode |
 | FR-7.4 Turn and LLM-call logging | `logback-spring.xml`, `LlmCallLoggingInterceptor`, controller `Turn started/finished` | Live: `docker logs` shows both lines with `[sessionId customerId]`; trace shows `LLM_ROUND_TRIP` | Done |
@@ -606,7 +613,7 @@ Status as of 2026-11-20. "Verified" means a test or live check asserts the requi
 | Seeding 8 customers (17 inserts) | ~1 s incl. CDC delivery |
 | Seeded scenarios | 11 questions: 7 resolved, 4 escalated, compliance score 100% |
 | Poison pill → DLT | ~8 s (1 + 2 + 4 s backoff) |
-| Automated tests | 69 (67 pass, 2 live LLM tests skip without a key) |
+| Automated tests | 82 (80 pass, 2 live LLM tests skip without a key) |
 | Live, single-pass, `gemini-3.1-flash-lite`, `reasoning_effort=low` | 1.4 to 2.7 s per turn (one 4.5 s outlier), 1 model call, about 1,400 to 1,600 prompt tokens; all replies accepted after the prompt fix |
 | Live, single-pass, `gemini-3.1-pro-preview` | `max_tokens=400`: 4.1 to 4.6 s, all 4 replies cut off by thinking tokens. `max_tokens=1024`: 7.5 s per call, 3 of 4 turns hit the 8 s timeout and returned the draft |
 | Live, agentic, `gemini-3.1-flash-lite` | 3.6 to 5.9 s, 2 to 5 model calls per turn (0.6 to 2.9 s each) |
@@ -624,6 +631,7 @@ Status as of 2026-11-20. "Verified" means a test or live check asserts the requi
 8. Prompt caching (FR-3.5 to FR-3.7) savings are unmeasured: Gemini does not report cached tokens and OpenAI was not run. Run the A/B comparison on OpenAI, or read Gemini's native usage metadata (§4.6).
 9. No server-side throttle (bulkhead) around the model call; only client pacing and bounded retries (FR-3.9).
 10. Single-pass uses the keyword tool plan; questions outside its intents get the general account summary. Agentic mode covers them at the cost of latency.
+11. Duplicate-ticket matching (FR-6.3, FR-6.4) uses keyword topic rules: two different billing disputes from one customer are treated as one, and a paraphrased problem without a shared error code or topic word is not matched. A semantic match behind the same Java rule is the production step (§6). The waiver path does not run the check, by design.
 
 ---
 
@@ -686,5 +694,6 @@ The decision model sits only on the routing and grading edges. Eligibility, waiv
 | 2026-11-20 | Implementation | v1.6: live Gemini runs in containers; §4.7 single-pass orchestration (FR-3.8), §4.8 Gemini thought signatures, bounded retries, pacing, logging (FR-3.9, FR-7.4); model choice (Flash-Lite); §4.6 cached-token findings; §8 measured live results; 69 tests. Affects Slides 3, 5, 8 and Q&A |
 | 2026-11-21 | Decision | §6: keep the POC on Gemini Flash-Lite plus deterministic Java guardrails; `gemini-decision-1` documented as the production scale-up path (safety screen, intent triage, RAG grading). No code change. Added §9 (future decision-model front gate: flow, integration, rollout, open questions). Affects Slides 3, 5, 8 and Q&A |
 | 2026-11-21 | Measurement | §6: `gemini-decision-1` probed on the 11 demo questions, 3 adversarial messages and RAG chunk grading with `scripts/decision-probe.ps1` (11/11 intents, 0 output tokens, mean 295 ms); comparison with all tested models; §9.4 and vendor-claim notes updated. Application code unchanged. Affects Slides 3, 5, 8 and Q&A |
+| 2026-11-21 | Implementation | FR-6.3/6.4: deterministic `TicketMatchTools` (existing-ticket follow-up in the agent, duplicate-safe ticket creation with warehouse read and row lock); FR-7.5 CDC consume logging; §6 rationale for deterministic duplicate detection; §8 rows, 82 tests, 28 smoke checks, per-scenario scripts; known gap 11. Affects Slides 5, 8 and Q&A |
 
 > **How to use this changelog:** Add a row for every architectural decision — component swaps, new tools added to the agent, latency target adjustments, schema changes. Reference the slide number it affects so the deck stays in sync.

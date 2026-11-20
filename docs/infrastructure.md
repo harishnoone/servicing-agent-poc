@@ -308,7 +308,7 @@ The app registers this connector itself on startup (`DebeziumConnectorRegistrar`
 | `cust_333` Lena Fischer | ERR-504-GW ticket 2h past SLA | `SLA_BREACH` escalation, 2026 fix cited |
 | `cust_111` Ava Chen | No issues | SLA-credit answer from `sla_credit_policy.md#sec-4.1` |
 
-Demo endpoints used by the scripts: `POST /api/demo/customers`, `POST /api/demo/tickets` (`slaHoursFromNow` < 0 = breached), `POST /api/demo/customers/{id}` (update), `GET /api/demo/profile/{id}`, `DELETE /api/demo/cache/{id}`, `POST /api/demo/poison-pill`.
+Demo endpoints used by the scripts: `POST /api/demo/customers`, `POST /api/demo/tickets` (`slaHoursFromNow` < 0 = breached; returns the existing ticket with `duplicate=true` instead of inserting when an open ticket already covers the same problem, FR-6.4), `POST /api/demo/customers/{id}` (update), `GET /api/demo/profile/{id}`, `DELETE /api/demo/cache/{id}`, `POST /api/demo/poison-pill`.
 
 ---
 
@@ -342,3 +342,4 @@ Nothing here is in `compose.yaml` or `application.yml` today. See `design.md` §
 | 2026-11-18 | Implementation | Split Kafka listeners (internal 29092 / host 9092); connector auto-registration; `decimal.handling.mode: string`; Persona 3 (Jordan Blake); cache-miss demo step and `customer_id` indexes |
 | 2026-11-19 | Implementation | Compose file name and stop commands; LLM provider env vars (OpenAI/Gemini); startup sequence uses `demo.ps1 reset/seed/charge`; seed data table and demo endpoints |
 | 2026-11-21 | Plan | Added "Future infrastructure: decision-model gateway" (planned config, no new container, production notes). Not implemented |
+| 2026-11-21 | Implementation | `POST /api/demo/tickets` is duplicate-safe (FR-6.4); per-scenario scripts in `scripts/scenarios/` |

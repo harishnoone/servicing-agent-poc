@@ -77,6 +77,18 @@ public class TurnState {
 
     public synchronized String getLastWaiverReasonCode() { return lastWaiverReasonCode; }
 
+    private io.github.harishnoone.servicingagent.tools.TicketMatchTools.TicketMatch ticketMatch;
+
+    /** Result of the existing-ticket check this turn (FR-6.3); the last call wins. */
+    public synchronized void recordTicketMatch(io.github.harishnoone.servicingagent.tools.TicketMatchTools.TicketMatch match) {
+        this.ticketMatch = match;
+    }
+
+    /** @return the existing-ticket check result, or {@code null} if the check did not run this turn */
+    public synchronized io.github.harishnoone.servicingagent.tools.TicketMatchTools.TicketMatch getTicketMatch() {
+        return ticketMatch;
+    }
+
     /** Retrieved chunk as the single-pass synthesis call sees it (FR-4). */
     public record RetrievedSnippet(String documentId, String authorityLevel, boolean superseded,
                                    String supersededBy, String content) {}

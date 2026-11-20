@@ -53,3 +53,4 @@ CHAT cust_111 What SLA credit do I get for a P1 outage longer than 4 hours?
 CHAT cust_123 Why is my bill $45 higher, and can you waive it?
 CHAT cust_456 My gateway is throwing ERR-504-GW, what should I do?
 CHAT cust_789 Can you waive my late fee?
+CHAT cust_333 Still seeing ERR-504-GW on the EU gateway, any update on our ticket?

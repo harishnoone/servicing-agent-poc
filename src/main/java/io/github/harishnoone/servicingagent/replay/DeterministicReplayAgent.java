@@ -9,6 +9,8 @@ import io.github.harishnoone.servicingagent.tools.EscalationTools;
 import io.github.harishnoone.servicingagent.tools.KnowledgeRetrievalTools;
 import io.github.harishnoone.servicingagent.tools.KnowledgeRetrievalTools.SearchResponse;
 import io.github.harishnoone.servicingagent.tools.KnowledgeRetrievalTools.SearchResult;
+import io.github.harishnoone.servicingagent.tools.TicketMatchTools;
+import io.github.harishnoone.servicingagent.tools.TicketMatchTools.TicketMatch;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -40,15 +42,17 @@ public class DeterministicReplayAgent {
     private final KnowledgeRetrievalTools knowledgeTools;
     private final DeterministicRulesTools rulesTools;
     private final EscalationTools escalationTools;
+    private final TicketMatchTools ticketMatchTools;
     private final TurnState turnState;
 
     public DeterministicReplayAgent(CustomerContextTools customerTools, KnowledgeRetrievalTools knowledgeTools,
                                     DeterministicRulesTools rulesTools, EscalationTools escalationTools,
-                                    TurnState turnState) {
+                                    TicketMatchTools ticketMatchTools, TurnState turnState) {
         this.customerTools = customerTools;
         this.knowledgeTools = knowledgeTools;
         this.rulesTools = rulesTools;
         this.escalationTools = escalationTools;
+        this.ticketMatchTools = ticketMatchTools;
         this.turnState = turnState;
     }
 
@@ -105,13 +109,14 @@ public class DeterministicReplayAgent {
 
     private String technical(CustomerProfile profile, String message) {
         List<String> steps = new ArrayList<>(List.of("Loaded customer profile"));
+        TicketMatch existing = checkExistingTicket(profile, message, steps);
         SearchResponse found = knowledgeTools.searchPoliciesAndCases(message);
         steps.add("Searched troubleshooting knowledge (confidence " + found.retrievalConfidence() + ")");
 
         EscalationTools.EscalationDecision esc = escalationTools.escalateWithSummary(
                 profile.customerId(), message, "TECHNICAL_OUTAGE", steps, false);
 
-        StringBuilder out = new StringBuilder();
+        StringBuilder out = new StringBuilder(existingTicketSentence(existing));
         SearchResult canonical = found.results().stream()
                 .filter(r -> !r.superseded() && "CANONICAL_POLICY".equals(r.authorityLevel())).findFirst().orElse(null);
         if (!found.lowConfidence() && canonical != null) {
@@ -136,6 +141,7 @@ public class DeterministicReplayAgent {
 
     private String general(CustomerProfile profile, String message) {
         List<String> steps = new ArrayList<>(List.of("Loaded customer profile"));
+        TicketMatch existing = checkExistingTicket(profile, message, steps);
         String lower = message.toLowerCase();
         // Account-status questions are answered from the profile alone; only policy questions need retrieval.
         SearchResponse found = null;
@@ -155,7 +161,9 @@ public class DeterministicReplayAgent {
             out.append("latest charge ").append(c.chargeType()).append(" of $").append(c.amount())
                     .append(" (").append(c.status()).append("). ");
         }
-        if (!profile.activeTickets().isEmpty()) {
+        if (existing.matched()) {
+            out.insert(0, existingTicketSentence(existing));
+        } else if (!profile.activeTickets().isEmpty()) {
             CustomerProfile.TicketSummary t = profile.activeTickets().get(0);
             out.append("Ticket ").append(t.ticketId()).append(" is ").append(t.status()).append(". ");
         }
@@ -174,6 +182,25 @@ public class DeterministicReplayAgent {
         return out.toString().strip();
     }
     // -------------------------------------------------------------------------
+
+    /** FR-6.3: runs the existing-ticket check and records it as a verified step for the handoff card. */
+    private TicketMatch checkExistingTicket(CustomerProfile profile, String message, List<String> steps) {
+        TicketMatch m = ticketMatchTools.findMatchingOpenTicket(profile.customerId(), message);
+        if (m.matched()) {
+            steps.add("Existing open ticket " + m.ticketId() + " (" + m.status() + ") already covers this request ("
+                    + m.matchReason() + "): treat as a follow-up, do not open a new ticket");
+        }
+        return m;
+    }
+
+    private static String existingTicketSentence(TicketMatch m) {
+        if (!m.matched()) {
+            return "";
+        }
+        return "You already have an open ticket for this: " + m.ticketId() + " (\"" + m.subject() + "\", status "
+                + m.status() + "). I am treating your message as a follow-up on that ticket, so there is no need "
+                + "to open a new one. ";
+    }
 
     /** Customer-facing sentence that matches what actually triggered the escalation. */
     private static String escalationSentence(EscalationTools.EscalationDecision esc) {

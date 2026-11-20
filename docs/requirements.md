@@ -113,6 +113,10 @@ Every functional requirement maps directly to one or more of the following spons
 - Chronological list of tools executed and facts verified
 - Recommended next action and cited policy clauses for the Tier-2 human agent
 
+**FR-6.3 (Existing-ticket recognition):** WHEN a customer reports a problem or complaint AND they already have an open (not `RESOLVED` or `CLOSED`) ticket for the same problem, THE SYSTEM SHALL treat the message as a follow-up on that ticket: the reply SHALL name the ticket id and status and SHALL NOT suggest opening a new ticket, and the trace SHALL show `findMatchingOpenTicket -> EXISTING_TICKET <id> (<reason>)`. "Same problem" is decided deterministically (`TicketMatchTools`): the message names the ticket id, an error code in the message appears in the ticket subject, or the message is about the same topic as the ticket category (technical fault or billing dispute). Waiver requests and policy questions SHALL NOT match on topic alone.
+
+**FR-6.4 (No duplicate tickets):** WHEN a ticket is created for a customer who already has an open ticket for the same problem (shared error code, same category and subject ignoring case and punctuation, or same category family and topic), THE SYSTEM SHALL NOT insert a new ticket and SHALL return the existing ticket id with `duplicate=true` and the match reason. The check SHALL read the warehouse (not the Redis cache, which can lag behind CDC) and SHALL be serialised per customer so concurrent requests cannot both create a ticket.
+
 ---
 
 ### Requirement 7: Backend-Only Observability, Traceability & Executive Reporting
@@ -124,6 +128,8 @@ Every functional requirement maps directly to one or more of the following spons
 **FR-7.3:** THE SYSTEM SHALL expose OpenAPI 3 / Swagger UI at `/swagger-ui.html` so all endpoints, CDC mutations, agent reasoning traces, and KPI reports can be demonstrated directly without requiring a separate frontend application.
 
 **FR-7.4:** THE SYSTEM SHALL log one line when an agent turn starts and one when it finishes (status, latency, tools, citations, LLM round trips and model time), and one line per model call (HTTP status, duration, provider token usage), each tagged with the session and customer id, to the container console. Each model call SHALL also appear in `agentReasoningTrace` as `LLM_ROUND_TRIP #n` with its latency.
+
+**FR-7.5 (CDC consume logging):** WHEN the CDC consumer applies a customer, billing or ticket event to Redis, THE SYSTEM SHALL log one INFO line (`CDC applied table=... id=... created|updated op=... lsn=... topic=... offset=...`) tagged with the customer id. The line SHALL contain ids only, never names, amounts, descriptions or the payload. Skipped events (duplicate, stale LSN) keep their existing log lines.
 
 ---
 
@@ -191,5 +197,6 @@ Non-functional targets (to be confirmed by measurement): added latency per gated
 | 2026-11-20 | Fix | Restored Requirements 4 to 8, accidentally removed by an edit on 2026-11-19, from the v1.3 text (unchanged since) |
 | 2026-11-19 | Update | Compose file name (`compose.yaml`); implementation status of every requirement is tracked in design.md §8 |
 | 2026-11-21 | Scope | Added decision-model screening/triage/grading to Out-of-Scope as a production scale-up item, per design.md §6. Added §6 Future Requirements (FR-F1 to FR-F6, planned only), per design.md §9 |
+| 2026-11-21 | Scope | Added FR-6.3 (existing-ticket recognition), FR-6.4 (no duplicate tickets for the same problem) and FR-7.5 (CDC consume logging); implemented and verified per design.md §8 |
 
 > **How to use this changelog:** Add a row every time a requirement is added, removed, or its target/threshold changes. Include the reason (e.g., "Panel feedback: tightened deflection target to 40% minimum after Q&A rehearsal").

@@ -129,7 +129,7 @@ class DemoScenariosTest {
         assertThat(card.path("openTickets").get(0).path("ticketId").asText()).isEqualTo("TKT-8841");
         assertThat(card.path("classifiedIntent").asText()).isEqualTo("TECHNICAL_OUTAGE");
         assertThat(mapper.convertValue(card.path("toolsExecuted"), List.class))
-                .containsExactly("getCustomerState", "searchPoliciesAndCases", "escalateWithSummary");
+                .containsExactly("getCustomerState", "findMatchingOpenTicket", "searchPoliciesAndCases", "escalateWithSummary");
         assertThat(mapper.convertValue(card.path("policyCitations"), List.class))
                 .contains("troubleshooting_guide.md#sec-1.1");
 
@@ -223,6 +223,34 @@ class DemoScenariosTest {
         mvc.perform(post("/api/demo/poison-pill").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"table\":\"orders\"}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    /** FR-6.3: Marcus reports the same ERR-504-GW problem; the agent recognises open ticket TKT-8841. */
+    @Test
+    void scenario4_existingTicketIsRecognisedAsFollowUp() throws Exception {
+        JsonNode r = chat("cust_456", "Hi again, the gateway is still throwing ERR-504-GW, any update?");
+
+        assertThat(events(r)).contains("TOOL_CALL: findMatchingOpenTicket -> EXISTING_TICKET TKT-8841 (ERROR_CODE)");
+        String text = r.path("finalResponse").asText();
+        assertThat(text).startsWith("You already have an open ticket for this: TKT-8841")
+                .contains("PENDING_ENGINEERING").contains("no need to open a new one");
+        assertThat(mapper.convertValue(r.at("/handoffCard/attemptedSteps"), List.class))
+                .anyMatch(s -> s.toString().startsWith("Existing open ticket TKT-8841 (PENDING_ENGINEERING)"));
+    }
+
+    /** FR-6.3: a waiver request is a new request, so Elena's open billing ticket is not mentioned. */
+    @Test
+    void waiverRequestIsNotTreatedAsFollowUpOnBillingTicket() throws Exception {
+        JsonNode r = chat("cust_123", "Can you waive the $45 late fee?");
+        assertThat(r.path("finalResponse").asText()).doesNotContain("already have an open ticket");
+        assertThat(events(r)).noneMatch(e -> e.startsWith("TOOL_CALL: findMatchingOpenTicket"));
+    }
+
+    @Test
+    void unrelatedQuestionChecksTicketsButFindsNoMatch() throws Exception {
+        JsonNode r = chat("cust_123", "What is my latest charge?");
+        assertThat(events(r)).contains("TOOL_CALL: findMatchingOpenTicket -> NO_MATCH");
+        assertThat(r.path("finalResponse").asText()).doesNotContain("already have an open ticket");
     }
 
     @Test

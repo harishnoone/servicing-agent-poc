@@ -177,6 +177,10 @@ switch ($Command.ToLower()) {
         $res = Api POST "/api/demo/tickets" @{ customerId = $Rest[0]; status = $Rest[1].ToUpper(); slaHoursFromNow = [int]$Rest[2]
             subject = ($Rest[3..($Rest.Count - 1)] -join " "); category = "TECHNICAL" }
         if (-not $res.Ok) { Write-Host "HTTP $($res.Status): $($res.Data)" -ForegroundColor Red; exit 1 }
+        if ($res.Data.duplicate) {
+            Write-Host "Not created: open ticket $($res.Data.ticketId) already covers this problem ($($res.Data.matchReason))" -ForegroundColor Green
+            exit 0
+        }
         Write-Host "Created $($res.Data.ticketId) (SLA breached: $($res.Data.slaBreached)). Waiting for it to reach Redis..."
         for ($i = 0; $i -lt 40; $i++) {
             $p = Api GET "/api/demo/profile/$($Rest[0])"

@@ -57,6 +57,7 @@ POST /api/agent/chat
      searchPoliciesAndCases  BM25 + dense hybrid search; canonical policy outranks case notes
      evaluateWaiverRules     pure Java: tier, tenure, amount, prior waivers
      escalateWithSummary     SLA breach / frustration / low retrieval confidence -> handoff card
+     findMatchingOpenTicket  open ticket for the same problem? -> reply as a follow-up, no new ticket
      getDeflectionReport     KPI aggregate
 ```
 
@@ -117,11 +118,31 @@ A turn's response (trimmed):
 
 The first three exist after startup; the rest after `seed`. All customer data is fictional. Add your own by appending `POST` and `CHAT` lines to `scripts/seed-data.txt`.
 
-Verify everything end to end (23 checks, prints `ALL CHECKS PASSED`; run on a fresh stack because it changes data):
+Verify everything end to end (28 checks, prints `ALL CHECKS PASSED`; run on a fresh stack because it changes data):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/demo-smoke.ps1
 ```
+
+Or run one scenario at a time, so you can pick what to show (each prints its trace and PASS/FAIL checks):
+
+```powershell
+.\scripts\scenarios\run.ps1            # menu
+.\scripts\scenarios\run.ps1 5          # one scenario
+.\scripts\scenarios\run.ps1 2 3 5      # several, in order
+```
+
+| # | Scenario |
+|---|---|
+| 1 | Live CDC mutation, with the consumer's `CDC applied` log line |
+| 2 | Autonomous waiver (Elena) |
+| 3 | ERR-504-GW conflict resolution and SLA escalation (Marcus) |
+| 4 | Clean denials (Jordan tier, Marcus waiver limit) |
+| 5 | Same customer, same problem: follow-up on the open ticket, duplicate ticket refused |
+| 6 | Dormant account / cache miss |
+| 7 | Poison pill, retries, dead-letter topic |
+| 8 | Supervisor override and append-only audit (changes data) |
+| 9 | KPI report |
 
 A step-by-step demo script and troubleshooting table are in [`docs/playbook.md`](docs/playbook.md).
 
@@ -172,7 +193,7 @@ Interactive docs: `http://localhost:8080/swagger-ui.html`.
 | POST | `/api/demo/mutate` | Insert a charge into the warehouse (triggers CDC) |
 | POST | `/api/demo/customers` | Create a customer (409 if it exists) |
 | POST | `/api/demo/customers/{id}` | Update tier, tenure or waiver count |
-| POST | `/api/demo/tickets` | Create a ticket; `slaHoursFromNow` < 0 means already breached |
+| POST | `/api/demo/tickets` | Create a ticket; `slaHoursFromNow` < 0 means already breached. If an open ticket already covers the same problem, nothing is inserted and the existing id is returned with `duplicate=true` |
 | GET | `/api/demo/profile/{id}` | The cached Redis profile the agent sees |
 | POST | `/api/demo/poison-pill` | Publish an unparseable CDC message to exercise retries and the DLT |
 | DELETE | `/api/demo/cache/{id}` | Evict a Redis profile to simulate a dormant account |
@@ -209,7 +230,7 @@ Policies are Markdown files in `src/main/resources/policies/`; each `##`/`###` s
 ## Development
 
 ```bash
-./mvnw test              # 69 tests; the 2 live-LLM tests run only when OPENAI_API_KEY is set
+./mvnw test              # 82 tests; the 2 live-LLM tests run only when OPENAI_API_KEY is set
 ./mvnw spring-boot:run   # app on the host; start the infra first: docker compose up -d warehouse-db kafka debezium redis
 ```
 
@@ -218,7 +239,7 @@ On Windows use `.\mvnw.cmd`. From the host Kafka is `localhost:9092` (containers
 ```
 compose.yaml, Dockerfile           5-container stack (multi-stage build, non-root runtime)
 connector-config/                  Debezium connector definition
-scripts/                           demo.ps1, demo.sh, seed-data.txt, demo-smoke.ps1
+scripts/                           demo.ps1, demo.sh, seed-data.txt, demo-smoke.ps1 (full e2e), scenarios/ (one scenario per script)
 src/main/java/io/github/harishnoone/servicingagent/
   cdc/ cache/                      Kafka consumer, connector registrar, warehouse fallback
   tools/                           Spring AI @Tool classes

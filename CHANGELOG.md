@@ -7,9 +7,15 @@ Per-requirement status lives in `docs/design.md` §8; spec-level history is in t
 ## [Unreleased]
 
 ### Added
+- **No duplicate tickets for the same problem (FR-6.3, FR-6.4).** New deterministic `TicketMatchTools`. The agent runs `findMatchingOpenTicket` for problem reports and complaints: when an open ticket already covers the request (ticket id, shared error code or same topic), the reply treats the message as a follow-up on that ticket and the trace shows `EXISTING_TICKET <id> (<reason>)`. Waiver requests and policy questions are excluded. `POST /api/demo/tickets` no longer inserts a duplicate: it returns the existing ticket with `duplicate=true` and `matchReason`, reading the warehouse under a per-customer row lock. Registered as a tool for agentic mode and passed to single-pass synthesis.
+- **CDC consume logging (FR-7.5).** `IdempotentKafkaConsumer` logs one `CDC applied table=... id=... created|updated` INFO line per applied customer, billing or ticket event, with `customerId` in the MDC and ids only.
+- **Per-scenario demo scripts.** `scripts/scenarios/01` to `09` run one scenario each with PASS/FAIL checks; `scripts/scenarios/run.ps1` picks them from a menu or by number. `scripts/demo-smoke.ps1` stays the full end-to-end run and now has 28 checks, including the duplicate-ticket scenario.
+- Tests: 82 (80 pass, 2 live-LLM tests skip without a key), including `TicketMatchToolsTest`, three new `DemoScenariosTest` cases and `IdempotentKafkaConsumerTest.logsEveryAppliedEventWithIdsOnly`.
 - **`scripts/decision-probe.ps1`:** standalone probe that runs the demo questions, adversarial prompts and RAG chunk grading against `gemini-decision-1`. Reads `GEMINI_API_KEY` from the environment. Results are in `docs/design.md` §6 (11/11 intents, 0 output tokens, mean 295 ms). Not wired into the application.
 
 ### Changed
+- `demo.ps1 ticket` and `demo.sh ticket` report "Not created: open ticket ... already covers this problem" instead of waiting for a ticket that was not created.
+- Agent system prompt rule 6: call `findMatchingOpenTicket` for problem reports.
 - **Decision recorded: no decision model in the POC.** The POC stays on Gemini Flash-Lite plus deterministic Java guardrails. `gemini-decision-1` is documented as the production scale-up path (pre-turn safety screen, intent and escalation triage, RAG chunk grading) in `docs/design.md` §6 and §9, `docs/requirements.md` §5 and §6, and `docs/infrastructure.md`. Documentation only; no code change.
 
 ## 2026-11-20

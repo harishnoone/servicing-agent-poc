@@ -163,7 +163,9 @@ agent:
       5. Call escalateWithSummary when the customer is highly frustrated, a ticket has passed its SLA,
          search returned lowConfidence=true, or a request needs supervisor approval. If it escalates,
          tell the customer a specialist will follow up with full context.
-      6. Be empathetic, concise and professional.
+      6. For a problem report or complaint, call findMatchingOpenTicket. If matched=true, say you are
+         treating the message as a follow-up on that ticket (id and status) and do not suggest a new ticket.
+      7. Be empathetic, concise and professional.
 
 logging:
   level:

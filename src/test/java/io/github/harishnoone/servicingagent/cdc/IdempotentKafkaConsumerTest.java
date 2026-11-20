@@ -1,11 +1,19 @@
 package io.github.harishnoone.servicingagent.cdc;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.harishnoone.servicingagent.model.CustomerProfile;
 import io.github.harishnoone.servicingagent.support.FakeRedis;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.test.util.ReflectionTestUtils;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -96,5 +104,40 @@ class IdempotentKafkaConsumerTest {
     void unparseablePayloadThrowsForDlt() {
         assertThatThrownBy(() -> consumer.handle("not-json{", "db.public.customers", 1))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** FR-7.5: one INFO line per applied event for each table, ids only, customerId in MDC; none for skips. */
+    @Test
+    void logsEveryAppliedEventWithIdsOnly() {
+        Logger logger = (Logger) LoggerFactory.getLogger(IdempotentKafkaConsumer.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            consumer.handle(customerEvent(500, 0), "db.public.customers", 11);
+            consumer.handle(customerEvent(510, 1), "db.public.customers", 12);
+            consumer.handle(billingEvent(520, "INV-9", "UNPAID"), "db.public.billing_ledger", 21);
+            consumer.handle("""
+                    {"after":{"ticket_id":"TCK-7","customer_id":"cust_123","category":"TECHNICAL",
+                     "subject":"ERR-504-GW","status":"OPEN","sla_deadline":"2026-11-22T10:00:00Z"},
+                     "source":{"table":"support_tickets","lsn":530},"op":"c"}""", "db.public.support_tickets", 31);
+            consumer.handle(customerEvent(510, 1), "db.public.customers", 13); // duplicate: no applied line
+
+            List<ILoggingEvent> applied = appender.list.stream()
+                    .filter(e -> e.getFormattedMessage().startsWith("CDC applied")).toList();
+            assertThat(applied).extracting(ILoggingEvent::getFormattedMessage).containsExactly(
+                    "CDC applied table=customers id=cust_123 created op=u lsn=500 topic=db.public.customers offset=11",
+                    "CDC applied table=customers id=cust_123 updated op=u lsn=510 topic=db.public.customers offset=12",
+                    "CDC applied table=billing_ledger id=INV-9 created op=c lsn=520 topic=db.public.billing_ledger offset=21",
+                    "CDC applied table=support_tickets id=TCK-7 created op=c lsn=530 topic=db.public.support_tickets offset=31");
+            assertThat(applied).allSatisfy(e -> {
+                assertThat(e.getLevel()).isEqualTo(Level.INFO);
+                assertThat(e.getMDCPropertyMap()).containsEntry("customerId", "cust_123");
+                assertThat(e.getFormattedMessage()).doesNotContain("Elena", "45.00", "ERR-504-GW");
+            });
+            assertThat(MDC.get("customerId")).isNull();
+        } finally {
+            logger.detachAppender(appender);
+        }
     }
 }

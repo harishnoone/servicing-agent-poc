@@ -22,7 +22,7 @@ All commands are PowerShell, run from the repository root.
    ```
    Expect `Agent planner mode: ...` and `Debezium connector 'warehouse-postgres-connector' registered`.
    For a live-model demo, start the app as in section 5 and expect `Agent planner mode: LLM single-pass (Java tool plan + one model call)` and `Gemini endpoint detected`.
-   To follow turns live during the demo: `docker logs -f servicing-agent-app 2>&1 | Select-String "Turn |LLM round trip"`. Every line carries `[sessionId customerId]`.
+   To follow turns live during the demo: `docker logs -f servicing-agent-app 2>&1 | Select-String "Turn |LLM round trip|CDC applied|Duplicate ticket"`. Every line carries `[sessionId customerId]`.
 5. Live mode only: run `.\scripts\demo.ps1 caching cust_123 2` once. Each turn must show exactly one `LLM_ROUND_TRIP #1 (HTTP 200)` and `LLM_SYNTHESIS_ACCEPTED`. If you see 429 or 402, fix the key before the demo (section 5).
 6. Rehearse once: `.\scripts\demo.ps1 scenarios` prints every seeded question with its outcome, tool trace and citations. For a pass/fail check, run `powershell -ExecutionPolicy Bypass -File scripts/demo-smoke.ps1` (`ALL CHECKS PASSED`). **Then reset and seed again** (step 2): both scripts change demo data.
 7. Open `http://localhost:8080/swagger-ui.html` and keep a terminal ready for the Redis checks.
@@ -42,6 +42,20 @@ After `seed`, eight more customers are available for audience questions (`cust_2
 ---
 
 ## 2. Demo script
+
+Every step below is also a standalone script in `scripts/scenarios/`, so you can pick steps during the demo: `.\scripts\scenarios\run.ps1` shows a menu, `run.ps1 5` runs one, `run.ps1 2 3 5` runs several in order. Each script prints the trace and reply and ends with `SCENARIO PASSED` or the failed checks. `scripts/demo-smoke.ps1` stays the full end-to-end run. Scenario 8 (supervisor override) changes data; run it last or reset after.
+
+| # | Script | Section |
+|---|---|---|
+| 1 | `01-cdc-mutation.ps1` | Step 1 |
+| 2 | `02-autonomous-waiver.ps1` | Step 2 |
+| 3 | `03-escalation-err504.ps1` | Step 3 |
+| 4 | `04-clean-denial.ps1` | Step 3 follow-up and Jordan |
+| 5 | `05-duplicate-ticket.ps1` | Step 3b |
+| 6 | `06-cache-miss.ps1` | Optional: dormant account |
+| 7 | `07-poison-pill-dlt.ps1` | Optional: poison pill |
+| 8 | `08-supervisor-override.ps1` | Optional: supervisor override |
+| 9 | `09-kpis.ps1` | Step 4 |
 
 ### Step 1: Live CDC mutation (Elena)
 
@@ -79,6 +93,15 @@ Walk through the `AgentTurnReport`:
 - `handoffCard`: tier, tenure, MRR, open tickets, `detectedSentiment: SLA_BREACH`, urgency, the tools executed in order, policy citations and the recommended next action. This is what saves Tier-2 handle time.
 
 Follow-up: `"Please waive the $35 late fee"` → `WAIVER_LIMIT_REACHED` (Marcus already used his one waiver).
+
+### Step 3b: Same problem again, no duplicate ticket (Marcus)
+
+Script: `.\scripts\scenarios\run.ps1 5`. Marcus already has TKT-8841 open for ERR-504-GW.
+1. **Agent → POST /api/agent/chat**: `{"customerId":"cust_456","message":"Hi again, the gateway is still throwing ERR-504-GW, any update?"}`. The trace shows `TOOL_CALL: findMatchingOpenTicket -> EXISTING_TICKET TKT-8841 (ERROR_CODE)`, and the reply opens with "You already have an open ticket for this: TKT-8841 ... no need to open a new one".
+2. **Demo → POST /api/demo/tickets** with the same problem: `{"customerId":"cust_456","category":"GATEWAY_OUTAGE","subject":"Gateway still returning ERR-504-GW","status":"OPEN","slaHoursFromNow":24}`. The response is `ticketId: TKT-8841, duplicate: true, matchReason: ERROR_CODE`, and no row is inserted. `docker logs servicing-agent-app` shows `Duplicate ticket prevented: existing=TKT-8841 reason=ERROR_CODE`.
+3. Contrast: `"What SLA credit do I get for a P1 outage longer than 4 hours?"` is a policy question, so it gets a normal policy answer, not a follow-up.
+
+Point out: the check is deterministic Java (same input, same answer, with a stated reason), the creation check reads the warehouse rather than Redis, and it locks the customer row so two concurrent requests cannot both create a ticket.
 
 ### Step 4: KPIs
 

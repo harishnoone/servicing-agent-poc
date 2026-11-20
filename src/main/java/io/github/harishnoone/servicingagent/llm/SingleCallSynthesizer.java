@@ -127,6 +127,11 @@ public class SingleCallSynthesizer {
             sb.append("Waiver rule engine result: ").append(turnState.getLastWaiverReasonCode()).append('\n');
         }
         sb.append("Escalated to Tier-2: ").append(turnState.isEscalated()).append('\n');
+        var existing = turnState.getTicketMatch();
+        if (existing != null && existing.matched()) {
+            sb.append("Existing open ticket already covers this request: ").append(existing.ticketId()).append(" (")
+                    .append(existing.status()).append("). Say it is a follow-up on that ticket; do not suggest a new ticket.\n");
+        }
         var snippets = turnState.getSnippets();
         if (!snippets.isEmpty()) {
             sb.append("\nRetrieved sources (cite only these ids):\n");

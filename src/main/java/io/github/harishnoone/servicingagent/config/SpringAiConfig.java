@@ -6,6 +6,7 @@ import io.github.harishnoone.servicingagent.tools.DeterministicRulesTools;
 import io.github.harishnoone.servicingagent.tools.EscalationTools;
 import io.github.harishnoone.servicingagent.tools.KnowledgeRetrievalTools;
 import io.github.harishnoone.servicingagent.tools.ReportingTools;
+import io.github.harishnoone.servicingagent.tools.TicketMatchTools;
 import org.springframework.ai.chat.client.ChatClient;
 
 import org.springframework.context.annotation.Bean;
@@ -29,11 +30,12 @@ public class SpringAiConfig {
             KnowledgeRetrievalTools knowledgeRetrievalTools,
             DeterministicRulesTools deterministicRulesTools,
             EscalationTools escalationTools,
+            TicketMatchTools ticketMatchTools,
             ReportingTools reportingTools) {
         return builder
                 .defaultSystem(staticPromptPrefix.text())
                 .defaultTools(customerContextTools, knowledgeRetrievalTools, deterministicRulesTools,
-                        escalationTools, reportingTools)
+                        escalationTools, ticketMatchTools, reportingTools)
                 .build();
     }
 

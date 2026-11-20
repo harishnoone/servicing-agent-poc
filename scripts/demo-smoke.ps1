@@ -55,6 +55,21 @@ Check "Step 3: handoff card has TKT-8841 + SLA_BREACH" (($r.handoffCard.openTick
 $r = Chat "cust_456" "Please waive the `$35 late fee"
 Check "Step 3: second waiver denied (WAIVER_LIMIT_REACHED)" ([bool]($r.agentReasoningTrace.event -contains "TOOL_CALL: evaluateWaiverRules -> WAIVER_LIMIT_REACHED"))
 
+# Existing ticket: Marcus follows up on the same problem; the agent recognises TKT-8841 (FR-6.3)
+$r = Chat "cust_456" "Hi again, the gateway is still throwing ERR-504-GW, any update?"
+Check "Existing ticket: trace shows EXISTING_TICKET TKT-8841" ([bool]($r.agentReasoningTrace.event | Where-Object { $_ -like "TOOL_CALL: findMatchingOpenTicket -> EXISTING_TICKET TKT-8841*" }))
+Check "Existing ticket: reply names TKT-8841 as a follow-up" ($r.finalResponse -match "TKT-8841")
+
+# Duplicate ticket prevented: same problem again for Marcus creates nothing (FR-6.4)
+$countSql = "SELECT COUNT(*) FROM support_tickets WHERE customer_id='cust_456'"
+$beforeCount = [int](docker exec warehouse-db psql -U warehouse_admin -d enterprise_warehouse -tAc $countSql)
+$t = Invoke-RestMethod -Method Post "$base/api/demo/tickets" -ContentType "application/json" -Body (@{
+    customerId = "cust_456"; category = "GATEWAY_OUTAGE"; subject = "Gateway still returning ERR-504-GW"
+    status = "OPEN"; slaHoursFromNow = 24 } | ConvertTo-Json)
+Check "Duplicate ticket: returned existing TKT-8841 (duplicate=$($t.duplicate), $($t.matchReason))" ($t.duplicate -and $t.ticketId -eq "TKT-8841")
+$afterCount = [int](docker exec warehouse-db psql -U warehouse_admin -d enterprise_warehouse -tAc $countSql)
+Check "Duplicate ticket: no new row ($beforeCount -> $afterCount)" ($afterCount -eq $beforeCount)
+
 # Jordan: clean denial
 $r = Chat "cust_789" "Can you waive my late fee?"
 Check "Jordan: TIER_INELIGIBLE, no handoff" (($r.agentReasoningTrace.event -contains "TOOL_CALL: evaluateWaiverRules -> TIER_INELIGIBLE") -and -not $r.handoffCard)

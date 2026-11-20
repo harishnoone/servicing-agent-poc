@@ -1,5 +1,8 @@
 package io.github.harishnoone.servicingagent.controller;
 
+import io.github.harishnoone.servicingagent.model.CustomerProfile.TicketSummary;
+import io.github.harishnoone.servicingagent.tools.TicketMatchTools;
+import io.github.harishnoone.servicingagent.tools.TicketMatchTools.TicketMatch;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -42,6 +45,7 @@ import java.util.UUID;
 public class DemoMutationController {
 
     private static final String ID = "^[A-Za-z0-9_\\-]{1,32}$";
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(DemoMutationController.class);
 
     public record MutationRequest(
             @NotBlank @Pattern(regexp = ID) String customerId,
@@ -176,21 +180,58 @@ public class DemoMutationController {
     }
 
     @PostMapping("/tickets")
-    @Operation(summary = "Create a support ticket (live CDC trigger)",
+    @Operation(summary = "Create a support ticket (live CDC trigger), unless one is already open for the same problem",
             description = "Inserts a ticket with an SLA deadline relative to now. Use a negative slaHoursFromNow "
-                    + "(e.g. -4) with status PENDING_ENGINEERING to create an SLA-breach escalation scenario.")
+                    + "(e.g. -4) with status PENDING_ENGINEERING to create an SLA-breach escalation scenario. "
+                    + "FR-6.4: if the customer already has an open ticket for the same problem (shared error code, "
+                    + "same subject, or same category and topic), no row is inserted and the existing ticket is "
+                    + "returned with duplicate=true.")
     public ResponseEntity<Map<String, Object>> createTicket(@RequestBody @Valid TicketCreateRequest request) {
-        String ticketId = "TKT-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
-        tx.executeWithoutResult(s -> {
+        String newId = "TKT-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        TicketMatch existing = tx.execute(s -> {
             requireCustomer(request.customerId());
+            // Serialise ticket creation per customer so two concurrent requests cannot both pass the check.
+            jdbc.queryForObject("SELECT customer_id FROM customers WHERE customer_id = ? FOR UPDATE",
+                    String.class, request.customerId());
+            if (!"RESOLVED".equals(request.status())) {
+                // The warehouse is the source of truth here; Redis may not have the newest ticket yet.
+                List<TicketSummary> open = jdbc.query(
+                        "SELECT ticket_id, category, subject, status, sla_deadline FROM support_tickets "
+                                + "WHERE customer_id = ? AND status NOT IN ('RESOLVED', 'CLOSED') "
+                                + "ORDER BY last_updated DESC",
+                        (rs, i) -> new TicketSummary(rs.getString("ticket_id"), rs.getString("category"),
+                                rs.getString("subject"), rs.getString("status"), rs.getString("sla_deadline")),
+                        request.customerId());
+                TicketMatch dup = TicketMatchTools.duplicateOf(open, request.category(), request.subject());
+                if (dup.matched()) {
+                    return dup;
+                }
+            }
             jdbc.update("INSERT INTO support_tickets (ticket_id, customer_id, category, subject, status, sla_deadline) "
                             + "VALUES (?, ?, ?, ?, ?, NOW() + make_interval(hours => ?))",
-                    ticketId, request.customerId(), request.category(), request.subject(), request.status(),
+                    newId, request.customerId(), request.category(), request.subject(), request.status(),
                     request.slaHoursFromNow());
+            return null;
         });
-        return ResponseEntity.ok(Map.of("ticketId", ticketId, "customerId", request.customerId(),
-                "slaBreached", request.slaHoursFromNow() < 0,
-                "message", "Row inserted. Debezium will publish it to db.public.support_tickets."));
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("customerId", request.customerId());
+        if (existing != null) {
+            log.info("Duplicate ticket prevented: existing={} reason={}", existing.ticketId(), existing.matchReason());
+            body.put("ticketId", existing.ticketId());
+            body.put("duplicate", true);
+            body.put("matchReason", existing.matchReason());
+            body.put("existingStatus", existing.status());
+            body.put("existingSubject", existing.subject());
+            body.put("message", "Open ticket " + existing.ticketId() + " already covers this problem ("
+                    + existing.matchReason() + "); no new ticket was created.");
+            return ResponseEntity.ok(body);
+        }
+        body.put("ticketId", newId);
+        body.put("duplicate", false);
+        body.put("slaBreached", request.slaHoursFromNow() < 0);
+        body.put("message", "Row inserted. Debezium will publish it to db.public.support_tickets.");
+        return ResponseEntity.ok(body);
     }
 
     @GetMapping("/profile/{customerId}")

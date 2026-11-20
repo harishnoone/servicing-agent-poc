@@ -566,7 +566,7 @@ Virtual Threads provide the concurrency benefits of reactive I/O (no platform th
 
 ## 8. Requirements Traceability & Verification
 
-Status as of 2026-11-21. "Verified" means a test or live check asserts the requirement's own expected values, not just that the code runs. Tests are in `src/test/java`; the live checks are `scripts/demo-smoke.ps1` (28 checks against the running stack), the per-scenario scripts `scripts/scenarios/01` to `09` (each with its own PASS/FAIL checks) and `scripts/demo.ps1 scenarios` (seeded questions).
+Status as of 2026-11-21. "Verified" means a test or live check asserts the requirement's own expected values, not just that the code runs. Tests are in `src/test/java`; the live checks are `scripts/demo-smoke.ps1` (29 checks against the running stack, offline planner, 1500 ms per-turn budget), `scripts/demo-smoke-live.ps1` (the same checks on Gemini, 9000 ms per-turn budget, plus "at least one reply written by the model": 30 checks), the per-scenario scripts `scripts/scenarios/01` to `09` (each with its own PASS/FAIL checks) and `scripts/demo.ps1 scenarios` (seeded questions).
 
 | Req | Implementation | Verified by | Status |
 |---|---|---|---|
@@ -615,6 +615,7 @@ Status as of 2026-11-21. "Verified" means a test or live check asserts the requi
 | Poison pill → DLT | ~8 s (1 + 2 + 4 s backoff) |
 | Automated tests | 82 (80 pass, 2 live LLM tests skip without a key) |
 | Live, single-pass, `gemini-3.1-flash-lite`, `reasoning_effort=low` | 1.4 to 2.7 s per turn (one 4.5 s outlier), 1 model call, about 1,400 to 1,600 prompt tokens; all replies accepted after the prompt fix |
+| Live e2e (`demo-smoke-live.ps1`, Flash-Lite), 2026-11-21 | Run 1: 3.3 to 8 s per turn, one HTTP 503 "high demand", 4 of 6 calls hit the 8 s timeout and returned the draft; one call billed about 980 tokens beyond prompt plus reply despite `reasoning_effort=low`. Run 2: 30/30 checks, 1.5 to 2.0 s on the timed turns, 4 of 6 replies written by the model. Decisions identical to offline in both runs |
 | Live, single-pass, `gemini-3.1-pro-preview` | `max_tokens=400`: 4.1 to 4.6 s, all 4 replies cut off by thinking tokens. `max_tokens=1024`: 7.5 s per call, 3 of 4 turns hit the 8 s timeout and returned the draft |
 | Live, agentic, `gemini-3.1-flash-lite` | 3.6 to 5.9 s, 2 to 5 model calls per turn (0.6 to 2.9 s each) |
 | Live, agentic, `gemini-3.1-pro-preview` | 18.8 to 105 s per turn, 3 to 4 model calls; one turn exceeded the 180 s client timeout |
@@ -695,5 +696,6 @@ The decision model sits only on the routing and grading edges. Eligibility, waiv
 | 2026-11-21 | Decision | §6: keep the POC on Gemini Flash-Lite plus deterministic Java guardrails; `gemini-decision-1` documented as the production scale-up path (safety screen, intent triage, RAG grading). No code change. Added §9 (future decision-model front gate: flow, integration, rollout, open questions). Affects Slides 3, 5, 8 and Q&A |
 | 2026-11-21 | Measurement | §6: `gemini-decision-1` probed on the 11 demo questions, 3 adversarial messages and RAG chunk grading with `scripts/decision-probe.ps1` (11/11 intents, 0 output tokens, mean 295 ms); comparison with all tested models; §9.4 and vendor-claim notes updated. Application code unchanged. Affects Slides 3, 5, 8 and Q&A |
 | 2026-11-21 | Implementation | FR-6.3/6.4: deterministic `TicketMatchTools` (existing-ticket follow-up in the agent, duplicate-safe ticket creation with warehouse read and row lock); FR-7.5 CDC consume logging; §6 rationale for deterministic duplicate detection; §8 rows, 82 tests, 28 smoke checks, per-scenario scripts; known gap 11. Affects Slides 5, 8 and Q&A |
+| 2026-11-21 | Verification | Two e2e scripts: `demo-smoke.ps1` (deterministic, 1500 ms budget, 29 checks) and `demo-smoke-live.ps1` (Gemini Flash-Lite, 9000 ms budget, 30 checks). Live e2e results added to §8. Affects Slides 8, 9 |
 
 > **How to use this changelog:** Add a row for every architectural decision — component swaps, new tools added to the agent, latency target adjustments, schema changes. Reference the slide number it affects so the deck stays in sync.

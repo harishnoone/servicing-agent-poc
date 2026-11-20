@@ -24,7 +24,7 @@ All commands are PowerShell, run from the repository root.
    For a live-model demo, start the app as in section 5 and expect `Agent planner mode: LLM single-pass (Java tool plan + one model call)` and `Gemini endpoint detected`.
    To follow turns live during the demo: `docker logs -f servicing-agent-app 2>&1 | Select-String "Turn |LLM round trip|CDC applied|Duplicate ticket"`. Every line carries `[sessionId customerId]`.
 5. Live mode only: run `.\scripts\demo.ps1 caching cust_123 2` once. Each turn must show exactly one `LLM_ROUND_TRIP #1 (HTTP 200)` and `LLM_SYNTHESIS_ACCEPTED`. If you see 429 or 402, fix the key before the demo (section 5).
-6. Rehearse once: `.\scripts\demo.ps1 scenarios` prints every seeded question with its outcome, tool trace and citations. For a pass/fail check, run `powershell -ExecutionPolicy Bypass -File scripts/demo-smoke.ps1` (`ALL CHECKS PASSED`). **Then reset and seed again** (step 2): both scripts change demo data.
+6. Rehearse once: `.\scripts\demo.ps1 scenarios` prints every seeded question with its outcome, tool trace and citations. For a pass/fail check, run `powershell -ExecutionPolicy Bypass -File scripts/demo-smoke.ps1` (deterministic, `ALL CHECKS PASSED`). If you will present in live mode, also run `scripts/demo-smoke-live.ps1` (section 5). **Then reset and seed again** (step 2): these scripts change demo data.
 7. Open `http://localhost:8080/swagger-ui.html` and keep a terminal ready for the Redis checks.
 
 Personas after a reset:
@@ -209,6 +209,8 @@ Then `docker compose up -d --force-recreate servicing-agent-app` and check the l
 - Then reset and seed again (section 1, step 2).
 
 **Measured with this setup (containerized stack, Gemini, single-pass):** 1.4 to 2.7 s per turn, 1 model call, about 1,400 to 1,600 prompt tokens. The tools take under 40 ms in total; the rest is the model call. See the model comparison in `design.md` §6.
+
+**Full live rehearsal:** `$env:GEMINI_API_KEY='<key>'` then `powershell -ExecutionPolicy Bypass -File scripts/demo-smoke-live.ps1`. It recreates the app in live mode with the settings above (key passed to Docker for that command only), runs the same checks as `demo-smoke.ps1` with a 9000 ms per-turn budget and 8 s pacing, prints how many replies the model wrote versus fell back to the draft, then restores offline mode. Add `-KeepLive` to stay live for the demo. On 2026-11-21 it passed 30/30. Per-turn times varied with Google's load: one run had 1.5 to 2.0 s turns with 4 of 6 replies from the model; an earlier run the same day saw 3.3 to 8 s, a 503 "high demand" and 4 of 6 timeouts. Rehearse at the time of day you will present.
 
 `AGENT_LLM_ORCHESTRATION=agentic` lets the model plan and call the tools itself. It is kept for comparison but is slower (2 to 5 model calls per turn), so do not use it in the live demo.
 

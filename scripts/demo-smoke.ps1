@@ -1,26 +1,46 @@
 # End-to-end smoke test of the demo against a running stack (docker compose up --build -d).
-# Usage: powershell -ExecutionPolicy Bypass -File scripts/demo-smoke.ps1
-# On a rate-limited LLM (Gemini free tier, OpenAI trial) set $env:CHAT_PACE_SECONDS = 8 first (seconds between chat calls).
+# Two modes, same functional checks:
+#   Deterministic (offline planner, default):  powershell -ExecutionPolicy Bypass -File scripts/demo-smoke.ps1
+#   Live LLM: use scripts/demo-smoke-live.ps1, which switches the app to Gemini and calls this script with
+#             -Mode llm (9000 ms per-turn budget, 8 s pacing) and switches back to offline afterwards.
+param(
+    [ValidateSet("deterministic", "llm")] [string] $Mode = "deterministic",
+    # Per-turn latency budget. Default: 1500 ms deterministic (KPI target), 9000 ms llm (8 s synthesis timeout + tools).
+    [int] $MaxLatencyMs = 0
+)
 $ErrorActionPreference = "Stop"
 $base = "http://localhost:8080"
 $failures = 0
+if ($MaxLatencyMs -le 0) { $MaxLatencyMs = if ($Mode -eq "llm") { 9000 } else { 1500 } }
+$expectedPlanner = if ($Mode -eq "llm") { "PLANNER: LLM*" } else { "PLANNER: DETERMINISTIC_REPLAY" }
+Write-Host "Mode: $Mode  (per-turn latency budget $MaxLatencyMs ms)" -ForegroundColor Cyan
 
 function Check([string]$name, [bool]$ok, [string]$detail = "") {
     if ($ok) { Write-Host "PASS  $name" -ForegroundColor Green }
     else { Write-Host "FAIL  $name  $detail" -ForegroundColor Red; $script:failures++ }
 }
 $script:LastChatAt = [DateTime]::MinValue
+$script:Turns = 0; $script:WrongPlanner = 0; $script:LlmAccepted = 0; $script:LlmFallback = 0
 function Chat([string]$customerId, [string]$message) {
     $pace = 0; [void][int]::TryParse($env:CHAT_PACE_SECONDS, [ref]$pace)
     $wait = $pace - ([DateTime]::UtcNow - $script:LastChatAt).TotalSeconds
     if ($pace -gt 0 -and $wait -gt 0) { Start-Sleep -Milliseconds ([int]($wait * 1000)) }
     $script:LastChatAt = [DateTime]::UtcNow
     $body = @{ customerId = $customerId; message = $message } | ConvertTo-Json
-    Invoke-RestMethod -Method Post "$base/api/agent/chat" -ContentType "application/json" -Body $body
+    $r = Invoke-RestMethod -Method Post "$base/api/agent/chat" -ContentType "application/json" -Body $body
+    $events = $r.agentReasoningTrace.event
+    $script:Turns++
+    if (-not ($events | Where-Object { $_ -like $expectedPlanner })) { $script:WrongPlanner++ }
+    if ($events -contains "LLM_SYNTHESIS_ACCEPTED") { $script:LlmAccepted++ }
+    elseif ($events | Where-Object { $_ -like "LLM_SYNTHESIS_*" -or $_ -like "LLM_SYNTHESIS_FALLBACK*" }) { $script:LlmFallback++ }
+    $r
 }
 function Profile([string]$customerId) {
     $json = docker exec redis redis-cli GET "customer:profile:$customerId"
     if ($json) { $json | ConvertFrom-Json } else { $null }
+}
+function CheckLatency([string]$label, $r) {
+    Check "${label}: latency $($r.kpiImpact.totalTurnLatencyMs) ms < $MaxLatencyMs ($Mode)" ($r.kpiImpact.totalTurnLatencyMs -lt $MaxLatencyMs)
 }
 function WaitFor([scriptblock]$condition, [int]$seconds = 30) {
     for ($i = 0; $i -lt $seconds; $i++) { if (& $condition) { return $true }; Start-Sleep 1 }
@@ -44,7 +64,7 @@ $r = Chat "cust_123" "Why is my bill `$45 higher, and can you waive it?"
 Check "Step 2: RESOLVED_AUTONOMOUSLY" ($r.kpiImpact.deflectionStatus -eq "RESOLVED_AUTONOMOUSLY") $r.kpiImpact.deflectionStatus
 Check "Step 2: evaluateWaiverRules -> APPROVED" ([bool]($r.agentReasoningTrace.event -contains "TOOL_CALL: evaluateWaiverRules -> APPROVED"))
 Check "Step 2: cites billing_waivers_policy.md#sec-4.2" ($r.citations -contains "billing_waivers_policy.md#sec-4.2")
-Check "Step 2: latency $($r.kpiImpact.totalTurnLatencyMs) ms < 1500" ($r.kpiImpact.totalTurnLatencyMs -lt 1500)
+CheckLatency "Step 2" $r
 
 # 3. Marcus: ERR-504-GW conflict resolution + SLA escalation
 $r = Chat "cust_456" "My gateway is throwing ERR-504-GW, what should I do?"
@@ -78,7 +98,7 @@ Check "Jordan: TIER_INELIGIBLE, no handoff" (($r.agentReasoningTrace.event -cont
 Invoke-RestMethod -Method Delete "$base/api/demo/cache/cust_123" | Out-Null
 $r = Chat "cust_123" "What is my latest charge?"
 Check "Cache miss: trace shows warehouse fallback" ([bool]($r.agentReasoningTrace.event | Where-Object { $_ -like "*CACHE_MISS -> WAREHOUSE_FALLBACK*" }))
-Check "Cache miss: latency $($r.kpiImpact.totalTurnLatencyMs) ms < 1500" ($r.kpiImpact.totalTurnLatencyMs -lt 1500)
+CheckLatency "Cache miss" $r
 Check "Cache miss: Redis re-hydrated" (WaitFor { Profile "cust_123" } 5)
 
 # Supervisor override (demo mode: no IdP) and audit trail
@@ -105,6 +125,15 @@ Write-Host ("KPIs: sessions={0} deflections={1} escalations={2} deflectionRate={
     $k.policyComplianceScore, $k.cacheMissFallbacks, $k.dltMessageDepth)
 Check "KPI report populated" ($k.totalSessions -ge 5 -and $k.cacheMissFallbacks -ge 1)
 Check "KPI report exposes prompt-cache fields" ((@("llmCalls","promptTokens","cachedPromptTokens","promptCacheHitRatePercent") | Where-Object { $k.PSObject.Properties.Name -notcontains $_ }).Count -eq 0)
+
+# Planner: every chat turn ran in the expected mode
+Check "All $($script:Turns) turns ran on the $Mode planner" ($script:WrongPlanner -eq 0) "$($script:WrongPlanner) turn(s) on the other planner"
+if ($Mode -eq "llm") {
+    # Informational: a slow or overloaded provider falls back to the deterministic draft (decisions unchanged).
+    Write-Host ("LLM replies: {0} written by the model, {1} fell back to the deterministic draft (timeout, provider error or rejected rewrite)" -f `
+        $script:LlmAccepted, $script:LlmFallback) -ForegroundColor Cyan
+    Check "At least one reply written by the model" ($script:LlmAccepted -ge 1) "provider may be down or the key invalid"
+}
 
 Write-Host ""
 if ($failures -eq 0) { Write-Host "ALL CHECKS PASSED" -ForegroundColor Green; exit 0 }

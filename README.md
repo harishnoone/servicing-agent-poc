@@ -118,11 +118,19 @@ A turn's response (trimmed):
 
 The first three exist after startup; the rest after `seed`. All customer data is fictional. Add your own by appending `POST` and `CHAT` lines to `scripts/seed-data.txt`.
 
-Verify everything end to end (28 checks, prints `ALL CHECKS PASSED`; run on a fresh stack because it changes data):
+Verify everything end to end. There are two scripts with the same functional checks. Run them on a fresh stack, because they change data.
 
 ```powershell
+# Deterministic (offline planner): 29 checks, 1500 ms per-turn budget
 powershell -ExecutionPolicy Bypass -File scripts/demo-smoke.ps1
+
+# Live LLM (Gemini Flash-Lite, single-pass): 30 checks, 9000 ms per-turn budget, 8 s pacing.
+# Switches the app to live mode for the run, then back to offline. The key is read from this shell only.
+$env:GEMINI_API_KEY = '<AI Studio key>'
+powershell -ExecutionPolicy Bypass -File scripts/demo-smoke-live.ps1      # -KeepLive to stay in live mode
 ```
+
+The live run also reports how many replies the model wrote and how many fell back to the deterministic draft (provider timeout or error). Decisions are identical either way.
 
 Or run one scenario at a time, so you can pick what to show (each prints its trace and PASS/FAIL checks):
 
@@ -239,7 +247,7 @@ On Windows use `.\mvnw.cmd`. From the host Kafka is `localhost:9092` (containers
 ```
 compose.yaml, Dockerfile           5-container stack (multi-stage build, non-root runtime)
 connector-config/                  Debezium connector definition
-scripts/                           demo.ps1, demo.sh, seed-data.txt, demo-smoke.ps1 (full e2e), scenarios/ (one scenario per script)
+scripts/                           demo.ps1, demo.sh, seed-data.txt, demo-smoke.ps1 (full e2e, deterministic), demo-smoke-live.ps1 (full e2e, live LLM), scenarios/ (one scenario per script)
 src/main/java/io/github/harishnoone/servicingagent/
   cdc/ cache/                      Kafka consumer, connector registrar, warehouse fallback
   tools/                           Spring AI @Tool classes

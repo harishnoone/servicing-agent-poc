@@ -54,6 +54,20 @@ function Show-Turn($r) {
 
 function Trace-Has($r, [string]$pattern) { [bool]($r.agentReasoningTrace.event | Where-Object { $_ -like $pattern }) }
 
+# Latency budget per turn: 1500 ms offline (KPI target), 9000 ms when a live model wrote the reply
+# (8 s synthesis timeout plus tools). Read from the turn's trace. $env:SMOKE_MAX_LATENCY_MS overrides.
+function LatencyBudget($r) {
+    $override = 0
+    if ([int]::TryParse($env:SMOKE_MAX_LATENCY_MS, [ref]$override) -and $override -gt 0) { return $override }
+    if (Trace-Has $r "PLANNER: LLM*") { return 9000 }
+    return 1500
+}
+function CheckLatency([string]$label, $r) {
+    $budget = LatencyBudget $r
+    $mode = if ($budget -eq 9000) { "live LLM" } elseif ($budget -eq 1500) { "offline" } else { "override" }
+    Check "${label} latency $($r.kpiImpact.totalTurnLatencyMs) ms < $budget ($mode)" ($r.kpiImpact.totalTurnLatencyMs -lt $budget)
+}
+
 function Profile([string]$customerId) {
     try { Api GET "/api/demo/profile/$customerId" } catch { $null }
 }

@@ -288,7 +288,9 @@ The app registers this connector itself on startup (`DebeziumConnectorRegistrar`
 5. Open Swagger UI:
    http://localhost:8080/swagger-ui.html
 
-6. Full check: powershell -File scripts/demo-smoke.ps1 → ALL CHECKS PASSED (changes demo data; reset after)
+6. Full check: powershell -File scripts/demo-smoke.ps1 → ALL CHECKS PASSED (deterministic; changes demo data; reset after)
+   Live LLM: $env:GEMINI_API_KEY='...'; powershell -File scripts/demo-smoke-live.ps1 → recreates the app in live mode,
+   runs the same checks with a 9000 ms per-turn budget, then restores offline mode
 ```
 
 ---

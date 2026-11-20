@@ -324,7 +324,7 @@ Nothing here is in `compose.yaml` or `application.yml` today. See `design.md` §
 | `agent.decision.enabled` | Turn the gateway on; off by default | `false` |
 | `agent.decision.mode` | `shadow` (log only) or `enforce` | `shadow` |
 | `agent.decision.base-url`, `DECISION_API_KEY` | Endpoint and secret (env var, never committed) | unset |
-| `agent.decision.model` | Decision model id | `gemini-decision-1` (unverified) |
+| `agent.decision.model` | Decision model id | `gemini-decision-1` |
 | `agent.decision.timeout-ms` | Per-call timeout before fallback | `500` |
 | `agent.decision.block-threshold` | Safety score above which the turn is blocked | tune on golden set |
 | `agent.decision.intent-threshold` | Minimum top-intent score before escalation | tune on golden set |

@@ -232,7 +232,7 @@ docs/                              Requirements, design, runbook
 
 ## Roadmap (not implemented)
 
-The POC uses one generative model (Gemini Flash-Lite) plus deterministic Java guardrails. The planned production step is to put a dedicated decision model in front of it for three jobs: pre-turn safety screening, intent and escalation triage, and RAG chunk grading. The decision model would route and grade only; eligibility and approvals stay in Java. It would run in shadow mode first and fall back to today's behaviour on any failure. The decision model's availability, pricing and latency are unverified.
+The POC uses one generative model (Gemini Flash-Lite) plus deterministic Java guardrails. The planned production step is to put a dedicated decision model in front of it for three jobs: pre-turn safety screening, intent and escalation triage, and RAG chunk grading. The decision model would route and grade only; eligibility and approvals stay in Java. It would run in shadow mode first and fall back to today's behaviour on any failure. Measured on the 11 demo questions plus 3 adversarial ones with a standalone script (`scripts/decision-probe.ps1`): 11 of 11 intents correct, 0 output tokens, about 295 ms per call (results in [`docs/design.md`](docs/design.md) §6). Price and batch limits are not verified by us.
 
 Details: [`docs/requirements.md`](docs/requirements.md) §6, [`docs/design.md`](docs/design.md) §9, [`docs/infrastructure.md`](docs/infrastructure.md) "Future infrastructure".
 

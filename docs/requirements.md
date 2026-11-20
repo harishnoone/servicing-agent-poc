@@ -162,7 +162,7 @@ Every functional requirement maps directly to one or more of the following spons
 
 ## 6. Future Requirements (Production Scale-Up, NOT in Phase 1)
 
-Status: planned, not implemented, not part of the POC acceptance criteria. Design: `design.md` §9. These split fast classification from generation by adding a dedicated decision model (candidate: `gemini-decision-1`, details unverified) in front of the generative model.
+Status: planned, not implemented, not part of the POC acceptance criteria. Design: `design.md` §9. These split fast classification from generation by adding a dedicated decision model (candidate: `gemini-decision-1`, probed on the demo set; see design.md §6) in front of the generative model.
 
 | ID | Requirement (EARS) | KPI lever |
 |---|---|---|
@@ -173,7 +173,7 @@ Status: planned, not implemented, not part of the POC acceptance criteria. Desig
 | FR-F5 | THE system SHALL support a shadow mode in which the decision model is called and logged on every turn but does not change the outcome, so agreement with the deterministic path can be measured before a check goes live. | Quality & Risk |
 | FR-F6 | THE system SHALL NOT let a decision-model score approve a waiver, credit or any financial outcome; eligibility remains in deterministic Java (FR-5.1 to FR-5.3). | Quality & Risk |
 
-Non-functional targets (to be confirmed by measurement): added latency per gated turn about 250 ms (vendor claim, unverified); each check has a configurable timeout (initial 500 ms); the default configuration works offline with no decision model (NFR-1).
+Non-functional targets (to be confirmed by measurement): added latency per gated turn about 300 ms (measured mean 295 ms per call on 2026-11-21, design.md §6); each check has a configurable timeout (initial 500 ms); the default configuration works offline with no decision model (NFR-1).
 
 ---
 

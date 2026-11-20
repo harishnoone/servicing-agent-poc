@@ -312,6 +312,28 @@ Demo endpoints used by the scripts: `POST /api/demo/customers`, `POST /api/demo/
 
 ---
 
+## Future infrastructure: decision-model gateway (planned, NOT IMPLEMENTED)
+
+Nothing here is in `compose.yaml` or `application.yml` today. See `design.md` §9 and `requirements.md` §6.
+
+- **No new container.** The decision model is a hosted API called over HTTPS, like the generative model. The 5-container local stack is unchanged, and the default `NoOpDecisionGateway` keeps the stack working offline.
+- **Planned configuration** (names are proposals):
+
+| Setting | Purpose | Initial value |
+|---|---|---|
+| `agent.decision.enabled` | Turn the gateway on; off by default | `false` |
+| `agent.decision.mode` | `shadow` (log only) or `enforce` | `shadow` |
+| `agent.decision.base-url`, `DECISION_API_KEY` | Endpoint and secret (env var, never committed) | unset |
+| `agent.decision.model` | Decision model id | `gemini-decision-1` (unverified) |
+| `agent.decision.timeout-ms` | Per-call timeout before fallback | `500` |
+| `agent.decision.block-threshold` | Safety score above which the turn is blocked | tune on golden set |
+| `agent.decision.intent-threshold` | Minimum top-intent score before escalation | tune on golden set |
+
+- **Production deployment (extends design §7.2):** call the decision endpoint from EKS through the same egress path and Zero-Data-Retention terms as the generative model, after `PiiSanitizer`. Add a circuit breaker and a Micrometer timer and counter (`decision.calls`, `decision.fallbacks`, `decision.blocked`) so shadow-mode agreement and fallback rate can be watched before enforcement.
+- **CI gate:** the golden-transcript evaluation (design §7.2) runs the gateway in shadow mode and fails the build on a regression in compliance score before any check moves to `enforce`.
+
+---
+
 ## Changelog
 
 | Date | Author | Change |
@@ -319,3 +341,4 @@ Demo endpoints used by the scripts: `POST /api/demo/customers`, `POST /api/demo/
 | 2025-07-14 | Initial | File created from `infrastructure_and_cdc_setup.md` source document |
 | 2026-11-18 | Implementation | Split Kafka listeners (internal 29092 / host 9092); connector auto-registration; `decimal.handling.mode: string`; Persona 3 (Jordan Blake); cache-miss demo step and `customer_id` indexes |
 | 2026-11-19 | Implementation | Compose file name and stop commands; LLM provider env vars (OpenAI/Gemini); startup sequence uses `demo.ps1 reset/seed/charge`; seed data table and demo endpoints |
+| 2026-11-21 | Plan | Added "Future infrastructure: decision-model gateway" (planned config, no new container, production notes). Not implemented |

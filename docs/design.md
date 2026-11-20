@@ -463,6 +463,26 @@ Measured in the containerized stack on 2026-11-20, same four persona questions (
 
 Parameters tested: `reasoning_effort` (low; leave empty for `gpt-4o`, which rejects it), `max_tokens` (400 truncated Pro; 1024 is the default), synthesis timeout (8 s), prompt caching on and off, single-pass vs agentic, and client pacing (`CHAT_PACE_SECONDS` 5 to 20 s). Operational findings: free-tier keys allow about 20 requests per model per day and 0 for Pro; a depleted prepaid balance returns HTTP 402; Gemini 3 agentic tool calling needs the thought-signature interceptor (§4.8).
 
+### Why no decision model (`gemini-decision-1`) in the POC? Production scale-up path
+**POC decision:** one generative model (Gemini Flash-Lite, single-pass) plus the deterministic Java guardrails. No decision model is added.
+
+Reasons:
+- **Policy is already deterministic.** Fee-waiver limits ($50.00, 12-month count) are enforced in `DeterministicRulesTools`, and PII is masked by `PiiSanitizer` (regex, no NER). A model scoring the same rules would duplicate logic that runs in under 1 ms and is unit-tested.
+- **Integration cost.** A decision model is not a chat-completions call. Spring AI's `ChatClient` is built around conversational tool calling, so using it would need a custom REST client and DTOs to read the returned probabilities, plus a new failure mode in the turn path.
+- **No volume to justify it.** The benefit is per-call cost and latency at high volume. A short live demo does not reach that, and each added moving part is demo risk.
+
+**Production scale-up (Day 2):** split fast classification ("System 1") from generation ("System 2") by placing a decision model in front of Flash. Flash stays responsible for the customer-facing reply.
+
+| Production bottleneck | Role of the decision model | Today in the POC |
+|---|---|---|
+| Pre-turn safety and adversarial screening | Gatekeeper before Flash is called: prompt injection, off-topic | `PiiSanitizer` redaction only; no injection screen |
+| Intent and escalation triage | Scores fixed routes (`BILLING_WAIVER`, `TICKET_STATUS`, `FRUSTRATION_ESCALATE`) with confidence scores | Keyword tool plan (§4.7) and keyword frustration list in `EscalationTools` |
+| RAG chunk and citation grading | Grades retrieved chunks in one pass (`is_superseded`, `directly_answers_query`) before Flash sees them | Authority weighting (canonical x2.0, superseded x0.5) and a 0.72 confidence threshold in `KnowledgeRetrievalTools` |
+
+Boundary that does not change: eligibility, waiver approval and citation validation stay in deterministic Java. A decision model may route and grade, but it never approves money.
+
+**Unverified vendor claims.** The model's release date, pricing (about $0.10 per 1M input tokens), latency (about 150 to 250 ms), batch size (up to 1,000 questions per pass) and LiteLLM `/v1/decisions` support come from the project owner's notes and have not been tested or checked against Google's documentation. Re-verify before quoting them. Nothing in this repository calls the model. The target design is in §9.
+
 ### Why Virtual Threads (JDK 21) instead of reactive programming?
 Virtual Threads provide the concurrency benefits of reactive I/O (no platform thread starvation under load) with the readability of standard imperative Java.
 
@@ -551,6 +571,49 @@ Status as of 2026-11-20. "Verified" means a test or live check asserts the requi
 
 ---
 
+## 9. Future Architecture: Decision-Model Front Gate (Production Scale-Up, NOT IMPLEMENTED)
+
+Status: design only. Nothing in this section exists in the code, and the POC does not depend on it. Requirements: `requirements.md` §6 (FR-F1 to FR-F5). Infrastructure: `infrastructure.md` "Future infrastructure".
+
+### 9.1 Target turn flow
+
+```
+POST /api/agent/chat
+  PiiSanitizer
+    --> [System 1] DecisionGateway (decision model, scores only, no generated text)
+          safety screen:  injection / off-topic / abuse   --> block or safe reply, Flash never called
+          intent triage:  BILLING_WAIVER | TICKET_STATUS | FRUSTRATION_ESCALATE | ...  --> selects tool plan
+    --> Java tool plan (unchanged): getCustomerState, searchPoliciesAndCases, evaluateWaiverRules, escalateWithSummary
+          RAG grading:    decision model scores chunks (is_superseded, directly_answers_query) before Flash sees them
+    --> [System 2] SingleCallSynthesizer (Gemini Flash) writes the reply
+    --> citation check --> AgentTurnReport
+```
+
+The decision model sits only on the routing and grading edges. Eligibility, waiver approval, escalation triggers and citation validation remain deterministic Java.
+
+### 9.2 Integration design
+
+- **Port and adapter.** A `DecisionGateway` interface in a new `decision/` package with two methods, `screen(text)` and `classify(text, choices)`, plus `gradeChunks(query, chunks, rubric)`. The adapter is a plain REST client with its own DTOs. It does not go through Spring AI `ChatClient`, which is built for conversational tool calling and not for returning per-question probabilities.
+- **Default stays offline.** A `NoOpDecisionGateway` is the default bean, so the stack still runs with no key (NFR-1). The real adapter is enabled by configuration.
+- **Fail closed or open, per check.** If the call fails or exceeds its timeout (target 500 ms): the safety screen falls back to the existing `PiiSanitizer` path and logs the miss; intent triage falls back to the keyword tool plan (§4.7); chunk grading falls back to authority weighting. A decision-model outage degrades quality and never blocks a turn.
+- **Scores are inputs, thresholds are Java.** Each route and each grade has a threshold in `application.yml` (`agent.decision.*`). A score below threshold sends the turn to the existing escalation tool (confidence < 0.72 rule).
+- **Trace and KPIs.** Each call adds a `DECISION_GATE` step to the reasoning trace (check name, top label, score, latency). The KPI report gains `decisionCalls`, `decisionFallbacks`, `blockedTurns`.
+
+### 9.3 Rollout and evaluation
+
+1. **Shadow mode.** Call the decision model on every turn, record its answer, act on the existing keyword path. Compare agreement against the seeded scenarios and the golden transcript set (§7.2).
+2. **Gate one check at a time**, starting with the safety screen, then triage, then chunk grading.
+3. **Promotion gate.** A check goes live only when it matches or beats the deterministic path on the golden set with no regression in compliance score.
+
+### 9.4 Open questions (verify before building)
+
+- Availability, pricing, latency, batch limits and API surface of `gemini-decision-1`. The figures in §6 are unverified.
+- Whether the Vertex AI or Gemini API endpoint is usable under the Zero-Data-Retention setup in §7.2.
+- Whether LiteLLM or a direct client is the gateway, and whether a decision-API route exists there. The POC does not use LiteLLM today.
+- Calibration: whether the model's scores are reliable enough to set the thresholds without labelled data from this domain.
+
+---
+
 ## Changelog
 
 | Date | Author | Change |
@@ -565,5 +628,6 @@ Status as of 2026-11-20. "Verified" means a test or live check asserts the requi
 | 2026-11-19 | Scope | v1.5: §4.6 Prompt Caching (static prefix / dynamic suffix, FR-3.5 to FR-3.7), rationale in §6, traceability row and known gap; Affects Slides 3, 5 and Q&A |
 | 2026-11-19 | Implementation | v1.5: prompt caching built: `prompt/` package, `prompts/*.md`, `agent.prompt-caching.*` switch, cache metrics in the KPI report; 59 tests. Unmeasured against a real provider. Affects Slides 3, 5 and Q&A |
 | 2026-11-20 | Implementation | v1.6: live Gemini runs in containers; §4.7 single-pass orchestration (FR-3.8), §4.8 Gemini thought signatures, bounded retries, pacing, logging (FR-3.9, FR-7.4); model choice (Flash-Lite); §4.6 cached-token findings; §8 measured live results; 69 tests. Affects Slides 3, 5, 8 and Q&A |
+| 2026-11-21 | Decision | §6: keep the POC on Gemini Flash-Lite plus deterministic Java guardrails; `gemini-decision-1` documented as the production scale-up path (safety screen, intent triage, RAG grading). No code change. Added §9 (future decision-model front gate: flow, integration, rollout, open questions). Affects Slides 3, 5, 8 and Q&A |
 
 > **How to use this changelog:** Add a row for every architectural decision — component swaps, new tools added to the agent, latency target adjustments, schema changes. Reference the slide number it affects so the deck stays in sync.

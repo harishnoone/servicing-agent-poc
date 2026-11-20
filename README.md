@@ -227,8 +227,14 @@ src/main/java/io/github/harishnoone/servicingagent/
   telemetry/ guardrails/           Trace, per-turn state, KPIs, PII redaction
   config/                          Kafka retry, Spring AI, LLM logging, Gemini support, security, OpenAPI
 src/main/resources/                application.yml, logback-spring.xml, init.sql, policies/, cases/, prompts/
-docs/                              Requirements, design, runbook, presentation
+docs/                              Requirements, design, runbook
 ```
+
+## Roadmap (not implemented)
+
+The POC uses one generative model (Gemini Flash-Lite) plus deterministic Java guardrails. The planned production step is to put a dedicated decision model in front of it for three jobs: pre-turn safety screening, intent and escalation triage, and RAG chunk grading. The decision model would route and grade only; eligibility and approvals stay in Java. It would run in shadow mode first and fall back to today's behaviour on any failure. The decision model's availability, pricing and latency are unverified.
+
+Details: [`docs/requirements.md`](docs/requirements.md) §6, [`docs/design.md`](docs/design.md) §9, [`docs/infrastructure.md`](docs/infrastructure.md) "Future infrastructure".
 
 ## Documentation
 
@@ -252,5 +258,6 @@ Requirement ids in code comments (e.g. `FR-3.8`) refer to `docs/requirements.md`
 - KPI counters are in memory; "deflection" means resolved without escalation, not a measured re-contact rate.
 - Autonomous approvals are written to `audit_log` only; nothing is written back to a billing system.
 - No server-side throttle around the model call (client pacing and bounded retries only).
+- No prompt-injection screen or model-based intent triage. This is deliberate for the POC (one generative model plus deterministic Java guardrails). The production path puts a dedicated decision model (`gemini-decision-1`) in front of Flash; see [`docs/design.md`](docs/design.md) §9.
 
 Full per-requirement status: [`docs/design.md`](docs/design.md) §8.

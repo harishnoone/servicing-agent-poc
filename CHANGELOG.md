@@ -6,6 +6,9 @@ Per-requirement status lives in `docs/design.md` §8; spec-level history is in t
 
 ## [Unreleased]
 
+### Changed
+- **Decision recorded: no decision model in the POC.** The POC stays on Gemini Flash-Lite plus deterministic Java guardrails. `gemini-decision-1` is documented as the production scale-up path (pre-turn safety screen, intent and escalation triage, RAG chunk grading) in `docs/design.md` §6 and §9, `docs/requirements.md` §5 and §6, and `docs/infrastructure.md`. Documentation only; no code change.
+
 ## 2026-11-20
 
 ### Added

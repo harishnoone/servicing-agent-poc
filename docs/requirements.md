@@ -154,8 +154,26 @@ Every functional requirement maps directly to one or more of the following spons
 - **Direct write-back mutations** to external production billing systems (waiver approval is recorded in the operational state store and emitted as an auditable action event).
 - **Custom React/SPA frontend** development (intentionally omitted in favor of Swagger UI, structured JSON trace reports, and container console telemetry).
 - **Multi-language translation and voice/telephony SIP trunk integration** (deferred to Phase 2 roadmap).
+- **Dedicated decision model (`gemini-decision-1`)** for pre-turn safety screening, intent and escalation triage, and RAG chunk grading. Deferred to the production scale-up path; the POC uses one generative model plus deterministic Java guardrails (rationale: design.md §6).
 - **Local MLflow tracking server container** inside `compose.yaml` (LLMOps regression evaluation runs as a CI/CD pipeline gate rather than a runtime chat dependency).
 
+
+---
+
+## 6. Future Requirements (Production Scale-Up, NOT in Phase 1)
+
+Status: planned, not implemented, not part of the POC acceptance criteria. Design: `design.md` §9. These split fast classification from generation by adding a dedicated decision model (candidate: `gemini-decision-1`, details unverified) in front of the generative model.
+
+| ID | Requirement (EARS) | KPI lever |
+|---|---|---|
+| FR-F1 | WHEN a customer message arrives AND the decision gateway is enabled, THE system SHALL score it for prompt injection and off-topic content after PII sanitization and before any generative call, AND SHALL not call the generative model for a message scored above the block threshold. | Quality & Risk |
+| FR-F2 | WHEN a message passes screening, THE system SHALL score it against a fixed set of intents (for example `BILLING_WAIVER`, `TICKET_STATUS`, `FRUSTRATION_ESCALATE`) AND SHALL use the top intent to select the Java tool plan; a top score below the configured threshold SHALL trigger escalation. | Deflection, AHT |
+| FR-F3 | WHEN retrieval returns candidate chunks, THE system SHALL grade each against a rubric (`is_superseded`, `directly_answers_query`) in one call AND SHALL pass only chunks that meet the thresholds to the generative model. | Groundedness |
+| FR-F4 | IF the decision gateway errors or exceeds its timeout, THEN THE system SHALL fall back to the POC behaviour (PII masking only, keyword tool plan, authority-weighted retrieval) AND SHALL record the fallback in the trace and KPI report. | Reliability |
+| FR-F5 | THE system SHALL support a shadow mode in which the decision model is called and logged on every turn but does not change the outcome, so agreement with the deterministic path can be measured before a check goes live. | Quality & Risk |
+| FR-F6 | THE system SHALL NOT let a decision-model score approve a waiver, credit or any financial outcome; eligibility remains in deterministic Java (FR-5.1 to FR-5.3). | Quality & Risk |
+
+Non-functional targets (to be confirmed by measurement): added latency per gated turn about 250 ms (vendor claim, unverified); each check has a configurable timeout (initial 500 ms); the default configuration works offline with no decision model (NFR-1).
 
 ---
 
@@ -172,5 +190,6 @@ Every functional requirement maps directly to one or more of the following spons
 | 2026-11-20 | Update | v1.5: FR-3.8 (single model call per turn, timeout and draft fallback), FR-3.9 (bounded provider retries, script pacing), FR-7.4 (turn and LLM-call logging); FR-3.5 status updated with live Gemini findings; latency lever annotated with measured numbers. Per design.md v1.6 §4.7, §4.8 |
 | 2026-11-20 | Fix | Restored Requirements 4 to 8, accidentally removed by an edit on 2026-11-19, from the v1.3 text (unchanged since) |
 | 2026-11-19 | Update | Compose file name (`compose.yaml`); implementation status of every requirement is tracked in design.md §8 |
+| 2026-11-21 | Scope | Added decision-model screening/triage/grading to Out-of-Scope as a production scale-up item, per design.md §6. Added §6 Future Requirements (FR-F1 to FR-F6, planned only), per design.md §9 |
 
 > **How to use this changelog:** Add a row every time a requirement is added, removed, or its target/threshold changes. Include the reason (e.g., "Panel feedback: tightened deflection target to 40% minimum after Q&A rehearsal").

@@ -1,0 +1,23 @@
+{
+  "name": "warehouse-postgres-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "warehouse-db",
+    "database.port": "5432",
+    "database.user": "warehouse_admin",
+    "database.password": "warehouse_password",
+    "database.dbname": "enterprise_warehouse",
+    "topic.prefix": "db",
+    "table.include.list": "public.customers,public.billing_ledger,public.support_tickets",
+    "plugin.name": "pgoutput",
+    "slot.name": "servicing_slot",
+    "publication.name": "servicing_publication",
+    "publication.autocreate.mode": "filtered",
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter.schemas.enable": "false",
+    "decimal.handling.mode": "string",
+    "tombstones.on.delete": "false"
+  }
+}

@@ -1,0 +1,173 @@
+spring:
+  application:
+    name: servicing-agent-poc
+
+  # Virtual threads for MVC request handling and Kafka listeners (FR-3.3)
+  threads:
+    virtual:
+      enabled: true
+
+  # Infra is started with `docker compose up`; do not let Boot manage compose implicitly.
+  docker:
+    compose:
+      enabled: false
+
+  # PostgreSQL 16 (Snowflake analog)
+  datasource:
+    url: jdbc:postgresql://localhost:5432/enterprise_warehouse
+    username: warehouse_admin
+    password: warehouse_password
+    hikari:
+      connection-timeout: 2000     # bounds the cache-miss fallback when the warehouse is down
+      maximum-pool-size: 10
+
+  # Redis 7 (L1 operational cache)
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 500ms
+
+  # Kafka (CDC consumer)
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: servicing-agent-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+  ai:
+    retry:
+      # Bounded retry for provider rate limits (HTTP 429) and brief outages (503). The Spring AI default is
+      # 10 attempts with up to 3-minute waits, which would hang a live turn. 3 attempts = waits of 1 s then 2 s.
+      # A quota error (no credits, free-tier limit 0) is also a 429 and will not recover: fix the account instead.
+      max-attempts: 3
+      on-http-codes: 429,503
+      backoff:
+        initial-interval: 1000ms
+        multiplier: 2
+        max-interval: 4000ms
+    openai:
+      api-key: ${OPENAI_API_KEY:placeholder-replace-before-use}
+      chat:
+        options:
+          model: gpt-4o
+          temperature: 0.1
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    display-request-duration: true
+    tags-sorter: alpha
+
+# App-level config, externalised per NFR-3
+agent:
+  llm:
+    # auto   = use the LLM when OPENAI_API_KEY is set, otherwise the offline deterministic planner
+    # llm    = always use the LLM
+    # replay = always use the offline deterministic planner (NFR-1)
+    mode: ${AGENT_LLM_MODE:auto}
+    # How LLM mode runs a turn:
+    # single-pass (default) = Java runs the tool plan (same plan as the offline planner), then ONE model call
+    #                         with no tools writes the reply. One provider round trip per turn.
+    # agentic               = the model plans and calls tools itself: one round trip per step (typically 3-4),
+    #                         each with full model latency. Slow on thinking models; kept for comparison (FR-3.1).
+    orchestration: ${AGENT_LLM_ORCHESTRATION:single-pass}
+    synthesis:
+      # Hard cap on the single model call. On timeout or error the deterministic draft is returned instead.
+      timeout-ms: ${AGENT_LLM_SYNTHESIS_TIMEOUT_MS:8000}
+      # Output cap. Gemini thinking models spend part of it on reasoning, so keep headroom (only used tokens are billed).
+      max-tokens: ${AGENT_LLM_SYNTHESIS_MAX_TOKENS:1024}
+      # Sent as reasoning_effort. Leave empty for OpenAI gpt-4o (rejects it). For Gemini thinking models
+      # "low" cuts thinking time; see README.
+      reasoning-effort: ${AGENT_LLM_REASONING_EFFORT:}
+  rules:
+    waiver:
+      max-fee-amount: 50.00
+      min-tenure-months: 12
+      eligible-tiers: Gold,Enterprise
+      # Maximum PRIOR waivers in the rolling 12 months for a new waiver to be allowed.
+      # Policy section 4.2 requires waivers_used_12m = 0, so this is 0.
+      max-waivers-per-year: 0
+  escalation:
+    min-retrieval-confidence: 0.72
+  retrieval:
+    top-k: 3
+    canonical-boost: 2.0
+  cache-miss:
+    fallback-enabled: true
+    query-timeout-seconds: 1
+  kpi:
+    aht-saved-minutes: 6.5
+  redis:
+    profile-key-prefix: "customer:profile:"
+    dedup-key-prefix: "processed:event:"
+    dedup-ttl-seconds: 86400
+  kafka:
+    topics:
+      customers: db.public.customers
+      billing: db.public.billing_ledger
+      tickets: db.public.support_tickets
+  debezium:
+    connect-url: ${DEBEZIUM_CONNECT_URL:}
+  prompt-caching:
+    # FR-3.5: send a byte-stable static prefix (system prompt + policy digest + few-shot examples) as the
+    # system message so the provider can cache it. false = the short system prompt only (for A/B measurement).
+    # OpenAI caches an exact prefix automatically above ~1024 tokens; no request marker is needed.
+    enabled: ${AGENT_PROMPT_CACHING:true}
+    policy-digest: classpath:prompts/policy-digest.md
+    few-shot: classpath:prompts/few-shot-examples.md
+  prompts:
+    # Single-pass system prompt. Static (no customer data), so it forms the cacheable prefix with the digest.
+    synthesis: |
+      You are a Tier-1 customer servicing agent for an enterprise SaaS company. You write the final reply to the
+      customer. The facts, decisions and sources in the user message were produced by deterministic tools and are
+      authoritative.
+      Rules:
+      1. Use only facts from the user message. Do not invent amounts, dates, ticket ids or policies.
+      2. Never change a decision. Say a waiver is approved only if the waiver rule engine result is APPROVED.
+         If escalated is true, say a specialist will follow up with full context.
+      3. Cite every policy claim inline with the exact source id in square brackets, e.g.
+         [billing_waivers_policy.md#sec-4.2]. Cite only ids listed under "Retrieved sources". Keep the citations
+         that appear in the draft.
+      4. If a source is marked SUPERSEDED, do not follow it; say the older guidance was superseded.
+      5. Do not say the bill, ledger or billing system was changed. An approved waiver is "approved and recorded";
+         do not add details about tickets or next steps that are not in the user message.
+      6. Be empathetic, concise (at most 120 words) and professional. Plain text, no markdown headings.
+    system: |
+      You are a Tier-1 customer servicing agent for an enterprise SaaS company.
+      Rules:
+      1. Call getCustomerState first for any account question. Use only facts returned by tools.
+      2. Use searchPoliciesAndCases for policy, billing and troubleshooting questions. Cite every policy
+         claim inline using the exact documentId in square brackets, e.g. [billing_waivers_policy.md#sec-4.2].
+         Never cite an id the tool did not return.
+      3. Follow the 'guidance' field of search results. If a result is marked superseded, do not follow it;
+         follow the canonical policy and tell the customer the older guidance was superseded.
+      4. Never decide waiver eligibility yourself. Always call evaluateWaiverRules and report its result.
+         Only say a waiver is approved when the tool returned reasonCode APPROVED.
+      5. Call escalateWithSummary when the customer is highly frustrated, a ticket has passed its SLA,
+         search returned lowConfidence=true, or a request needs supervisor approval. If it escalates,
+         tell the customer a specialist will follow up with full context.
+      6. Be empathetic, concise and professional.
+
+logging:
+  level:
+    io.github.harishnoone: DEBUG
+    org.springframework.ai: INFO
+    org.springframework.kafka: INFO
+    org.apache.kafka: WARN

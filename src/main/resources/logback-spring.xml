@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Console-only logging (the container's stdout is what `docker logs servicing-agent-app` shows).
+  Every line carries the agent turn's session and customer id from MDC, so one turn can be followed with
+    docker logs -f servicing-agent-app 2>&1 | Select-String "cust_123"
+  Levels are still set in application.yml (logging.level.*).
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <property name="CONSOLE_LOG_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} %5level [%15.15thread] [%X{sessionId:--} %X{customerId:--}] %-40.40logger{39} : %msg%n%wEx"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${CONSOLE_LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

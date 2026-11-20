@@ -1,0 +1,24 @@
+[
+  {
+    "case_id": "CASE-2024-0317",
+    "customer_id": "cust_archived_01",
+    "year": 2024,
+    "category": "TECHNICAL",
+    "resolution": "FIRMWARE_DOWNGRADE",
+    "notes": "DEPRECATED — DO NOT USE. Gateway ERR-504-GW was resolved in 2024 by rolling back edge-node firmware to v3.8.2. This approach has since been superseded: firmware downgrades introduce CVE-2024-38817 and are incompatible with TLS 1.3-only configurations. The current authoritative resolution is TLS certificate rotation as documented in troubleshooting_guide.md §1.1 (2026 edition). Any agent retrieving this case must discard the resolution and follow the active policy instead.",
+    "superseded_by": "troubleshooting_guide.md §1.1 (2026 edition)",
+    "authority_level": "HISTORICAL_CASE",
+    "is_active_policy": false
+  },
+  {
+    "case_id": "CASE-2024-0891",
+    "customer_id": "cust_archived_02",
+    "year": 2024,
+    "category": "BILLING",
+    "resolution": "LATE_FEE_WAIVED",
+    "notes": "Customer had Gold tier, 24 months tenure, and 0 waivers used in prior 12 months. Late fee of $29.00 was within the $50.00 policy ceiling. Waiver approved by Tier-1 agent under billing_waivers_policy.md §4.2. Customer acknowledged resolution via email; ticket closed same day. Included as a reference case for expected agent decision flow on eligible waiver requests.",
+    "superseded_by": null,
+    "authority_level": "HISTORICAL_CASE",
+    "is_active_policy": false
+  }
+]

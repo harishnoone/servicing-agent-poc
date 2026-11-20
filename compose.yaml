@@ -1,0 +1,125 @@
+services:
+
+  # 1. PostgreSQL 16: Snowflake warehouse analog
+  warehouse-db:
+    image: postgres:16-alpine
+    container_name: warehouse-db
+    environment:
+      POSTGRES_USER: warehouse_admin
+      POSTGRES_PASSWORD: warehouse_password   # local demo credential only
+      POSTGRES_DB: enterprise_warehouse
+    ports:
+      - "5432:5432"
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_wal_senders=4", "-c", "max_replication_slots=4"]
+    volumes:
+      - ./src/main/resources/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warehouse_admin -d enterprise_warehouse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # 2. Kafka 3.7 in KRaft mode.
+  #    Containers use kafka:29092; an app running on the host uses localhost:9092.
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # 3. Debezium Connect 2.6: WAL -> Kafka. The app registers the connector on startup.
+  debezium:
+    image: debezium/connect:2.6
+    container_name: debezium
+    depends_on:
+      warehouse-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+      STATUS_STORAGE_TOPIC: connect_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+
+  # 4. Redis 7: L1 operational cache + dedup store
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # 5. Servicing agent app
+  servicing-agent-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: servicing-agent-app
+    depends_on:
+      warehouse-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      debezium:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://warehouse-db:5432/enterprise_warehouse
+      SPRING_DATASOURCE_USERNAME: warehouse_admin
+      SPRING_DATASOURCE_PASSWORD: warehouse_password
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      DEBEZIUM_CONNECT_URL: http://debezium:8083
+      # Leave OPENAI_API_KEY empty to run the offline deterministic planner (NFR-1).
+      # Any OpenAI-compatible provider works (OpenAI, Gemini's OpenAI endpoint); see README.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-placeholder}
+      AGENT_LLM_MODE: ${AGENT_LLM_MODE:-auto}
+      AGENT_PROMPT_CACHING: ${AGENT_PROMPT_CACHING:-true}
+      AGENT_LLM_ORCHESTRATION: ${AGENT_LLM_ORCHESTRATION:-single-pass}
+      AGENT_LLM_SYNTHESIS_TIMEOUT_MS: ${AGENT_LLM_SYNTHESIS_TIMEOUT_MS:-8000}
+      AGENT_LLM_REASONING_EFFORT: ${AGENT_LLM_REASONING_EFFORT:-}
+      AGENT_LLM_SYNTHESIS_MAX_TOKENS: ${AGENT_LLM_SYNTHESIS_MAX_TOKENS:-1024}
+      SPRING_AI_OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com}
+      SPRING_AI_OPENAI_CHAT_COMPLETIONS_PATH: ${OPENAI_COMPLETIONS_PATH:-/v1/chat/completions}
+      SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL: ${OPENAI_MODEL:-gpt-4o}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s

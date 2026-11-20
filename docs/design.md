@@ -1,0 +1,569 @@
+# Technical Design Specification: Enterprise Servicing Agent POC
+
+> **Living Document** — Update this file whenever an architectural decision is made, a component changes, or a new demo scenario is added. This is the primary technical reference for the project.
+
+**Document Version:** 1.6  
+**Architecture Stack:** JDK 21 (Virtual Threads), Spring Boot 3.5, Spring AI 1.0, Apache Kafka (KRaft), Debezium Connect, PostgreSQL 16 (Snowflake Analog), Redis 7  
+**Demo & Inspection Surface:** OpenAPI 3 / Swagger UI (`/swagger-ui.html`) + Structured JSON Trace Reports
+
+---
+
+## 1. High-Level System Architecture
+
+To solve the enterprise latency bottleneck of querying analytical data warehouses (Snowflake) synchronously during real-time customer conversations, this architecture separates **analytical storage** from **operational agent state** via an event-driven Change Data Capture (CDC) backbone.
+
+```
+====================================================================================================
+LAYER 1: ANALYTICAL SOURCE & REAL-TIME CDC PIPELINE (Docker Compose)
+====================================================================================================
+[PostgreSQL 16 (Snowflake Warehouse Analog)]
+ │  Tables: CUSTOMERS, BILLING_LEDGER, SUPPORT_TICKETS (wal_level=logical)
+ ▼  (Write-Ahead Log Replication)
+[Debezium Kafka Connect]
+ │  Captures row-level INSERT/UPDATE deltas with monotonic LSN & unique event_id
+ ▼
+[Apache Kafka 3.7 (KRaft Mode - Zookeeperless)]
+ ├─► Primary Topics: db.public.customers | db.public.billing_ledger | db.public.support_tickets
+ ├─► Retry Topics:   <topic>-retry-1000 / -retry-2000 / -retry-4000 (1s / 2s / 4s, non-blocking)
+ └─► Error Topics:   *.DLT (Dead Letter Topics after 3 exponential backoff retries)
+
+====================================================================================================
+LAYER 2: SPRING BOOT 3.x MICROSERVICE (JDK 21 Virtual Threads / Project Loom)
+====================================================================================================
+   │
+   ├──► [Idempotent Kafka Consumer (@KafkaListener)]
+   │     ├── Redis SETNX deduplication (processed:event:{event_id}) + LSN ordering guard
+   │     └── Upserts normalized CustomerProfile JSON into [Redis 7 L1 Cache] (<1ms reads)
+   │
+   ├──► [Spring AI Agentic Engine (ChatClient + @Tool Registry)]
+   │     ├── 1. Ingress Guardrail: PII regex scrubber masks SSNs/cards/keys before logging/LLM
+   │     ├── 2. Autonomous Reasoning Loop (LLM plans & invokes typed Java @Tools):
+   │     │     ├── Tool A: getCustomerState()       ──► Reads Redis L1 Cache (Snowflake state)
+   │     │     │                                       *Fallback: Asymmetric warehouse lookup on cache miss
+   │     │     ├── Tool B: searchPoliciesAndCases() ──► Hybrid Search (Dense Vector + BM25)
+   │     │     │                                       *Authority: CANONICAL_POLICY > HISTORICAL_CASE
+   │     │     ├── Tool C: evaluateWaiverRules()    ──► Deterministic Java Eligibility Engine
+   │     │     ├── Tool D: escalateWithSummary()    ──► Compiles JSON Handoff for Human Agent
+   │     │     └── Tool E: getDeflectionReport()    ──► Executive KPI aggregate (FR-7.2)
+   │     └── 3. Output Verification: Enforces inline [doc_id] citations & logs telemetry
+   │
+   └──► [REST & Executive Reporting Controllers (Swagger UI / Postman)]
+         ├── POST /api/demo/mutate        ──► Triggers live warehouse INSERT/UPDATE (proves CDC)
+         ├── POST /api/agent/chat         ──► Executes agent turn & returns structured JSON report
+         └── GET  /api/agent/reports/kpis ──► Aggregates deflection, AHT savings & DLT health
+```
+
+---
+
+## 2. End-to-End Sequence Diagram (Live CDC Mutation + Agent Resolution)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor Presenter as Presenter (Swagger UI)
+  participant DemoCtrl as DemoMutationController
+  participant PG as Postgres 16 (Snowflake Analog)
+  participant Debezium as Debezium Connect
+  participant Kafka as Apache Kafka (KRaft)
+  participant Consumer as IdempotentKafkaConsumer
+  participant Redis as Redis 7 L1 Cache
+  participant AgentCtrl as AgentChatController
+  participant SpringAI as Spring AI ChatClient (LLM)
+  participant CustomerTools as CustomerContextTools
+  participant Rules as DeterministicRulesTools
+  participant HybridRAG as KnowledgeRetrievalTools
+
+  Note over Presenter, Redis: Phase A: Real-Time Warehouse Mutation & CDC Sync
+  Presenter->>DemoCtrl: POST /api/demo/mutate (Insert $45 late_fee for cust_123)
+  DemoCtrl->>PG: INSERT INTO billing_ledger (...)
+  PG-->>Debezium: WAL Logical Replication Event (LSN: 0/16B3748)
+  Debezium->>Kafka: Publish JSON CDC Event to db.public.billing_ledger
+  Kafka->>Consumer: Consume CDC Event
+  Consumer->>Redis: SET processed:event:{id} 1 NX EX 86400
+  alt New Event & LSN > last_applied_lsn
+    Consumer->>Redis: SET customer:profile:cust_123 (Updated ledger + LSN)
+  else Duplicate or Stale LSN
+    Consumer-->>Kafka: Ack & Skip (Idempotent No-Op)
+  end
+
+  Note over Presenter, HybridRAG: Phase B: Autonomous Agent Turn & Deterministic Guardrails
+  Presenter->>AgentCtrl: POST /api/agent/chat ("Why is my bill $45 higher, can you waive it?")
+  AgentCtrl->>AgentCtrl: PiiSanitizer.sanitize(input)
+  AgentCtrl->>SpringAI: prompt(sanitizedInput).tools(CustomerTools, PolicyTools, WaiverTools, EscalationTools)
+  SpringAI->>CustomerTools: @Tool getCustomerState("cust_123")
+  CustomerTools->>Redis: GET customer:profile:cust_123
+  alt Cache Hit (<1ms)
+    Redis-->>CustomerTools: CustomerProfile (Tier: Gold, Tenure: 36m, Fee: $45, WaiversUsed: 0)
+  else Cache Miss / Dormant Account (>12m Inactive)
+    Redis-->>CustomerTools: null (Cache Miss)
+    CustomerTools->>PG: Asymmetric Fallback Index Lookup (SELECT ... WHERE customer_id = ?)
+    PG-->>CustomerTools: Raw Warehouse Entity
+    CustomerTools->>Redis: Asynchronous Cache Re-hydration (SET NX customer:profile:cust_123)
+  end
+  CustomerTools-->>SpringAI: CustomerProfile Snapshot
+  SpringAI->>HybridRAG: @Tool searchPoliciesAndCases("late fee waiver policy")
+  HybridRAG-->>SpringAI: Chunk [billing_waivers_policy.md#sec-4.2] (Authority: CANONICAL)
+  SpringAI->>Rules: @Tool evaluateWaiverRules("cust_123", 45.00)
+  Rules-->>SpringAI: WaiverResult(eligible=true, reason="APPROVED", ref="sec-4.2")
+  SpringAI-->>AgentCtrl: Grounded Final Response + Citations
+  AgentCtrl->>AgentCtrl: Record KPI Telemetry (Deflected=true, Latency=410ms)
+  AgentCtrl-->>Presenter: 200 OK (AgentTurnReport JSON with full agentReasoningTrace)
+```
+
+---
+
+## 3. Data Model & Storage Schemas
+
+### 3.1 Upstream Analytical Schema (PostgreSQL 16 / Snowflake Analog)
+
+Configured with `wal_level=logical` and `REPLICA IDENTITY FULL` so Debezium emits complete before/after row states.
+
+```sql
+CREATE TABLE customers (
+    customer_id      VARCHAR(32)    PRIMARY KEY,
+    full_name        VARCHAR(120)   NOT NULL,
+    account_tier     VARCHAR(20)    NOT NULL CHECK (account_tier IN ('Standard', 'Gold', 'Enterprise')),
+    tenure_months    INT            NOT NULL,
+    mrr              DECIMAL(10, 2) NOT NULL,
+    waivers_used_12m INT            NOT NULL DEFAULT 0,
+    status           VARCHAR(20)    NOT NULL DEFAULT 'ACTIVE',
+    updated_at       TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE billing_ledger (
+    invoice_id    VARCHAR(32)    PRIMARY KEY,
+    customer_id   VARCHAR(32)    REFERENCES customers(customer_id),
+    charge_type   VARCHAR(30)    NOT NULL,  -- 'SUBSCRIPTION', 'LATE_FEE', 'OVERAGE'
+    amount        DECIMAL(10, 2) NOT NULL,
+    status        VARCHAR(20)    NOT NULL,  -- 'PAID', 'UNPAID', 'WAIVED'
+    description   TEXT,
+    created_at    TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE support_tickets (
+    ticket_id    VARCHAR(32)  PRIMARY KEY,
+    customer_id  VARCHAR(32)  REFERENCES customers(customer_id),
+    category     VARCHAR(40)  NOT NULL,
+    subject      TEXT         NOT NULL,
+    status       VARCHAR(30)  NOT NULL,  -- 'OPEN', 'PENDING_ENGINEERING', 'RESOLVED'
+    sla_deadline TIMESTAMP WITH TIME ZONE NOT NULL,
+    last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Supports the cache-miss fallback (bounded point lookups by customer_id)
+CREATE INDEX idx_billing_ledger_customer  ON billing_ledger (customer_id, created_at DESC);
+CREATE INDEX idx_support_tickets_customer ON support_tickets (customer_id, last_updated DESC);
+
+-- Append-only audit trail (FR-8.2); a trigger rejects UPDATE and DELETE. Not CDC-captured.
+CREATE TABLE audit_log (
+    audit_id BIGSERIAL PRIMARY KEY, action VARCHAR(40) NOT NULL, supervisor_sub VARCHAR(200) NOT NULL,
+    customer_id VARCHAR(32) NOT NULL, invoice_id VARCHAR(32), amount DECIMAL(10,2),
+    justification TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+### 3.2 Operational Redis L1 Cache Model (`CustomerProfile`)
+
+Hydrated asynchronously by `IdempotentKafkaConsumer` for sub-millisecond agent tool lookups, with an **Asymmetric Cache-Miss Fallback** for dormant accounts (Section 6).
+
+| Key | Purpose |
+|---|---|
+| `customer:profile:{customerId}` | Profile JSON (no TTL; overwritten by newer CDC events) |
+| `processed:event:{eventId}` | Dedup marker, TTL 24h. `eventId = {table}:{lsn}:{primaryKey}` from the Debezium envelope, so the same change is recognised on retry topics and after DLT replay. Released if processing fails, so a retry is not mistaken for a duplicate. |
+| `lsn:{table}:{primaryKey}` | Per-row LSN guard. An event applies only if its LSN is strictly greater than the stored one. Per row, not per profile, because the three tables are consumed independently and may interleave out of LSN order. |
+
+```java
+public record CustomerProfile(
+    String customerId,
+    String fullName,
+    String accountTier,
+    int tenureMonths,
+    BigDecimal mrr,
+    int waiversUsed12m,
+    long lastAppliedLsn,          // highest LSN applied to this profile; 0 for a fallback snapshot
+    List<LedgerEntry> recentCharges,   // newest first, capped at 10
+    List<TicketSummary> activeTickets
+) {}
+```
+
+### 3.3 Unstructured Knowledge Corpus & Authority Hierarchy
+
+1. **Canonical Policy Documents** (`src/main/resources/policies/*.md`), indexed one chunk per `##`/`###` section with citation ids like `billing_waivers_policy.md#sec-4.2`:
+   - `billing_waivers_policy.md`: late-fee waiver caps (≤ $50.00), tier eligibility (`Gold`, `Enterprise`), tenure minimum (≥ 12 months), annual limit (1 per 12 months).
+   - `sla_credit_policy.md`: service credit thresholds for P1/P2 outages; engineering-blocked SLA escalation rule (§5).
+   - `troubleshooting_guide.md`: current 2026 remediation for gateway error codes (`ERR-504-GW` certificate rotation, §1.1).
+2. **Historical Case Notes & Transcripts** (`src/main/resources/cases/historical_cases.json`): treated as `HISTORICAL_CASE` authority. Active `CANONICAL_POLICY` documents explicitly override historical transcripts or deprecated workarounds. A case with `superseded_by` is down-weighted, flagged `superseded=true`, and still surfaced when it strongly matches the query, so the agent can say the legacy guidance no longer applies.
+
+---
+
+## 4. Core Java 21 / Spring Boot 3.x Component Design
+
+### 4.1 Spring Boot Project Package Structure
+
+```
+servicing-agent-poc/
+├── compose.yaml                        # Postgres 16, Kafka KRaft, Debezium, Redis 7, Spring App
+├── connector-config/
+│   └── register-postgres-cdc.json      # Debezium connector definition (copy of src/main/resources/debezium/, which the app registers on startup)
+├── scripts/
+│   ├── demo.ps1, demo.sh               # Seed data, quick inserts, scenario runner (all writes go through CDC)
+│   ├── seed-data.txt                   # 8 extra customers: every reachable waiver outcome and escalation trigger (except low confidence)
+│   └── demo-smoke.ps1                  # End-to-end assertions against the running stack
+├── src/main/java/io/github/harishnoone/servicingagent/
+│   ├── ServicingAgentApplication.java  # Virtual Threads (spring.threads.virtual.enabled=true)
+│   ├── config/
+│   │   ├── KafkaResiliencyConfig.java  # Non-blocking retry topics (1s/2s/4s) + .DLT
+│   │   ├── SpringAiConfig.java         # Agentic ChatClient (tools) + synthesisChatClient (no tools)
+│   │   ├── LlmHttpConfig.java          # LlmCallLoggingInterceptor: per-call timing, usage logging, LLM_ROUND_TRIP trace steps
+│   │   ├── GeminiCompatConfig.java     # GeminiThoughtSignatureInterceptor (tool-call thought signatures), Gemini base URL only
+│   │   ├── SecurityConfig.java         # OAuth2 / OIDC RBAC & JWT verification (lazy issuer resolution)
+│   │   ├── AdminAccess.java            # Lets @PreAuthorize relax only in no-IdP demo mode
+│   │   └── OpenApiConfig.java          # Swagger UI customization
+│   ├── llm/
+│   │   └── SingleCallSynthesizer.java  # Single-pass: one model call, no tools, hard timeout, draft fallback (FR-3.8)
+│   ├── prompt/
+│   │   ├── StaticPromptPrefix.java     # Byte-stable cached system message: persona + policy digest + few-shot (FR-3.5, FR-3.6)
+│   │   └── CacheUsageRecorder.java     # Reads provider cached-token usage into the KPI report (FR-3.7)
+│   ├── cdc/
+│   │   ├── IdempotentKafkaConsumer.java      # LSN + Redis SETNX deduplication & profile hydration
+│   │   └── DebeziumConnectorRegistrar.java   # PUT /connectors/{name}/config on startup, with retry
+│   ├── cache/
+│   │   └── WarehouseFallbackRepository.java  # Bounded indexed point lookups for cache misses
+│   ├── tools/
+│   │   ├── CustomerContextTools.java   # @Tool getCustomerState() with Asymmetric Cache-Miss Fallback
+│   │   ├── KnowledgeRetrievalTools.java# @Tool searchPoliciesAndCases() (BM25 + Vector + Authority)
+│   │   ├── DeterministicRulesTools.java# @Tool evaluateWaiverRules()
+│   │   ├── EscalationTools.java        # @Tool escalateWithSummary()
+│   │   └── ReportingTools.java         # @Tool getDeflectionReport()
+│   ├── replay/
+│   │   └── DeterministicReplayAgent.java # Offline planner (NFR-1) driving the same tools
+│   ├── guardrails/
+│   │   └── PiiSanitizer.java           # Regex redaction before LLM/logging
+│   ├── telemetry/
+│   │   ├── TraceCollector.java         # Request-scoped step recorder (per-step latency)
+│   │   ├── TurnState.java              # Request-scoped tool facts: escalation, retrieved docs, confidence
+│   │   └── KpiMetricsService.java      # Deflection, AHT saved, compliance, cache misses, DLT depth
+│   ├── dlt/
+│   │   └── DltService.java             # DLT depth, inspection, replay
+│   ├── admin/
+│   │   ├── AdminOverrideService.java   # Supervisor waiver override (warehouse + audit, one transaction)
+│   │   └── AuditService.java           # Append-only audit_log writes
+│   ├── controller/
+│   │   ├── AgentChatController.java    # POST /api/agent/chat & GET /api/agent/reports/kpis
+│   │   ├── AdminOverrideController.java# POST /api/admin/overrides/waiver, GET /api/admin/kafka/dlt, DLT replay
+│   │   ├── DemoMutationController.java # POST /api/demo/mutate, customers, tickets, profile, cache eviction, poison pill
+│   │   └── GlobalExceptionHandler.java # Structured 400/403/404 error bodies (FR-2.2)
+│   └── model/
+│       └── AgentTurnReport.java        # Rich JSON report returned to Swagger UI
+└── src/main/resources/
+    ├── logback-spring.xml              # Console logging with [sessionId customerId] MDC (FR-7.4)
+    ├── application.yml                 # All thresholds, prompts, retrieval params (NFR-3)
+    ├── init.sql                        # Schema + seed data for 3 demo personas
+    ├── audit-schema.sql                # audit_log + immutability trigger (idempotent)
+    ├── debezium/register-postgres-cdc.json
+    ├── prompts/                        # policy-digest.md, few-shot-examples.md (static prefix content)
+    ├── policies/                       # Canonical Markdown policies
+    └── cases/                          # Historical transcripts & case notes
+```
+
+### 4.2 Kafka Resiliency & Dead Letter Topic (`KafkaResiliencyConfig.java`)
+
+- **Retry Policy:** 3 retry attempts with exponential backoff (1000ms initial interval, 2.0× multiplier, 4000ms cap) using Spring Kafka retry topics (`<topic>-retry-1000`, `-retry-2000`, `-retry-4000`, named after their delay). Retries happen on separate topics, so a failing record never blocks the main partition.
+- **DLT Routing:** After the third retry the record goes to `<original_topic>.DLT` with the original topic/partition/offset and the exception class, cause, message and stack trace in Kafka headers (`kafka_original-*`, `kafka_exception-*`). Poison pills never stall consumer lag.
+- **DLT Operations:** `GET /api/admin/kafka/dlt` shows depth and pending records with failure headers; `POST /api/admin/kafka/dlt/replay` republishes pending records to the original topic and commits a dedicated replay consumer group's offsets so records are not replayed twice. Depth = records not yet replayed.
+
+### 4.3 Deterministic Guardrails (`DeterministicRulesTools.java`)
+
+Exposes `@Tool(description = "Deterministically evaluate whether a customer is eligible for a late fee waiver based on account tier, tenure, fee amount, and prior waivers.")`:
+
+```java
+public record WaiverEvaluationResult(
+    boolean eligible,
+    String reasonCode,      // APPROVED | FEE_TOO_HIGH | TIER_INELIGIBLE | TENURE_TOO_SHORT | WAIVER_LIMIT_REACHED | INVALID_AMOUNT
+    String policyCitation,  // billing_waivers_policy.md#sec-4.2
+    String explanation
+) {}
+```
+
+- Enforces exact numeric and policy checks in pure Java before the LLM formulates its response, eliminating hallucinated approvals or prompt-injection bypasses.
+- An `APPROVED` result writes a `WAIVER_APPROVED_AUTONOMOUS` row to `audit_log` (the auditable action event; no write-back to billing, per scope).
+- Output verification in the controller counts a compliance violation when the response cites an id no tool returned, gives no citation although retrieval returned confident (≥ 0.72) results, or claims an approval without an `APPROVED` rule result.
+
+### 4.4 Structured Output Report (`AgentTurnReport.java`)
+
+Returned by `POST /api/agent/chat` so the panel can inspect every internal step in Swagger UI:
+
+```json
+{
+  "sessionId": "sess-9041",
+  "customerId": "cust_123",
+  "customerSnapshot": { "accountTier": "Gold", "tenureMonths": 36, "lastAppliedLsn": 23803720 },
+  "agentReasoningTrace": [
+    { "step": 1, "event": "PII_SANITIZATION_PASSED", "latencyMs": 1 },
+    { "step": 2, "event": "TOOL_CALL: getCustomerState (REDIS_HIT)", "latencyMs": 2 },
+    { "step": 3, "event": "TOOL_CALL: searchPoliciesAndCases (confidence=0.95)", "latencyMs": 38 },
+    { "step": 4, "event": "TOOL_CALL: evaluateWaiverRules -> APPROVED", "latencyMs": 1 }
+  ],
+  "finalResponse": "... you qualify for a one-time waiver under policy [billing_waivers_policy.md#sec-4.2] ...",
+  "citations": ["billing_waivers_policy.md#sec-4.2"],
+  "kpiImpact": { "deflectionStatus": "RESOLVED_AUTONOMOUSLY", "estimatedAhtSavedMinutes": 6.5, "totalTurnLatencyMs": 412 },
+  "handoffCard": null
+}
+```
+
+`latencyMs` is the duration of that step; the numbers above are illustrative (measured values are in §8). `deflectionStatus` and `handoffCard` come from tool results (`TurnState`), never from parsing the model's prose. `PARTIAL` means the turn failed and a fallback message was returned. On escalation `handoffCard` contains: customer id, tier, tenure, MRR, open tickets, classified intent, detected sentiment/trigger, urgency score (0–1), tools executed in order, attempted steps, cited policy clauses, and the recommended next action.
+
+### 4.5 Planner Modes (NFR-1)
+
+`agent.llm.mode`: `llm` (Spring AI OpenAI client; any OpenAI-compatible endpoint, tested on Gemini), `replay` (offline `DeterministicReplayAgent`), or `auto` (LLM when `OPENAI_API_KEY` is set, otherwise replay). The replay planner runs a fixed keyword-selected tool plan and a templated answer; facts, decisions, citations and escalations still come only from the same tools, so the report behaves the same in every mode.
+
+`agent.llm.orchestration` selects how LLM mode runs a turn (§4.7): `single-pass` (default, one model call) or `agentic` (the model calls the tools, one model call per step).
+
+| Trace marker | Mode | Model calls per turn |
+|---|---|---|
+| `PLANNER: DETERMINISTIC_REPLAY` | Offline | 0 |
+| `PLANNER: LLM_SINGLE_PASS` | Java tool plan + one synthesis call | 1 |
+| `PLANNER: LLM_AGENTIC` | Model plans and calls `@Tool` methods (FR-3.1) | 2 to 5 measured |
+
+### 4.6 Prompt Caching: Static Prefix / Dynamic Suffix (FR-3.5 to FR-3.7) — IMPLEMENTED; SAVINGS NOT MEASURABLE ON GEMINI
+
+Providers reuse cached input only on an exact prefix match, so each request is split into a stable part and a per-turn part:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ STATIC PREFIX (cached on turn 1, read on turns 2+)           │
+│  • System role and tone (servicing-agent persona)            │
+│  • Tool schemas and descriptions (Java @Tool definitions)    │
+│  • Canonical policy digest (waiver, SLA, troubleshooting)    │
+│  • Few-shot golden reasoning examples                        │
+└──────────────────────────────────────────────────────────────┘
+        <CACHE BREAKPOINT>
+┌──────────────────────────────────────────────────────────────┐
+│ DYNAMIC SUFFIX (computed every turn)                         │
+│  • Customer profile (Redis L1 / warehouse fallback)          │
+│  • Conversation transcript and turn history                  │
+│  • Latest customer message                                   │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Target design**
+- **Breakpoint:** a provider-specific marker (a `ChatClient` advisor or builder option) marks the end of the static prefix. Anthropic/Bedrock needs an explicit `cache_control: {"type": "ephemeral"}`; OpenAI caches the longest exact prefix automatically above about 1,024 tokens, so there the work is prefix stability, not a marker. Spring AI is pinned at 1.0.0; check that version's support for cache options before choosing between an advisor and a version bump.
+- **Prompt assembly:** `customerId`, `accountTier`, balance and `current_time` never enter the system prompt or tool descriptions. Tool registration order stays fixed. Any edit to the prefix is a cache-invalidating deploy.
+- **Turn behaviour:** turn 1 pays the cache write. Turns 2+ read the prefix. Provider TTLs are short (typically about 5 to 10 minutes of inactivity, refreshed on each hit), so an active chat stays warm and an idle one pays the write again.
+- **Metrics (FR-3.7):** read cached-token counts from the usage metadata and report the hit rate in `KpiMetricsService` and `GET /api/agent/reports/kpis`. OpenAI reports cache reads only; cache writes are implied by a cold first turn.
+
+**What was built**
+- **`StaticPromptPrefix`** builds the system messages once at startup. Agentic: `agent.prompts.system`, then `prompts/policy-digest.md`, then `prompts/few-shot-examples.md`. Single-pass: `agent.prompts.synthesis`, then the digest. It logs a 12-character content hash (`version`) and an estimated token count. `SpringAiConfig` passes it to `ChatClient.defaultSystem(...)`, and the tool list keeps a fixed registration order.
+- **Dynamic suffix:** in agentic mode `AgentChatController.runLlm` sends customer id, session id and the sanitized message as the user message; in single-pass `SingleCallSynthesizer.facts` sends the verified profile, tool outcomes, retrieved snippets and the deterministic draft. No customer data or timestamps are in the system message (`StaticPromptPrefixTest`).
+- **Provider handling:** OpenAI (the configured starter) caches an exact prefix automatically above about 1,024 tokens, so no request marker is added. An Anthropic/Bedrock `cache_control: {"type": "ephemeral"}` marker is not wired because that provider is not a dependency; it would be added as a `ChatClient` advisor or option when that provider is introduced. The planned `PromptCachingAdvisor` was therefore not created.
+- **`CacheUsageRecorder`** reads `prompt_tokens_details.cached_tokens` from each response and calls `KpiMetricsService.recordLlmUsage`. The trace shows `LLM_USAGE (promptTokens=..., cachedTokens=..., prefix=<version>)`, and `GET /api/agent/reports/kpis` reports `llmCalls`, `promptTokens`, `cachedPromptTokens` and `promptCacheHitRatePercent`.
+- **A/B switch:** `AGENT_PROMPT_CACHING=false` sends only the short system prompt, so the same scenarios can be run with and without the long prefix and compared on tokens, cost and TTFT.
+
+**Design decisions**
+1. **The digest is not a citable source.** It tells the model to plan and to call `searchPoliciesAndCases` for anything it states as policy. Citations are still validated against retrieval results, so `[doc_id]` groundedness is unchanged.
+2. **Customer data stays dynamic.** The profile reaches the model through the `getCustomerState` tool result, which sits after the prefix.
+3. **Prefix edits are deploys.** Changing any prompt file changes the `version` hash and invalidates the provider's cache for the old prefix.
+
+**Limits and open items**
+- **Gemini does not report cached tokens.** Its OpenAI-compatible endpoint returns only `prompt_tokens`, `completion_tokens` and `total_tokens` (checked on `gemini-3.5-flash`, `gemini-3.1-flash-lite`, `gemini-3.1-pro-preview`). `cachedPromptTokens` therefore stays 0 on Gemini even if implicit caching happens. A raw check with an identical 6,389-token prefix on `gemini-3.5-flash` went from 2.7 s on the first call to 1.6 s and 1.5 s on the next two, which suggests implicit caching, but that is one small sample. Reading Gemini's native `usageMetadata.cachedContentTokenCount` would need the native API.
+- **OpenAI was not run** (the test key had no credits), so the cached-token path is covered by unit tests only (`CacheUsageRecorderTest`).
+- **Usage across the tool loop:** Spring AI 1.0 sums prompt tokens across tool-calling iterations (`UsageCalculator.getCumulativeUsage`). The cached-token count comes from the provider's native usage object and may cover only the last call.
+- **Prefix size:** single-pass prompts were about 1,360 to 1,600 tokens per turn, about 900 of them static, so on OpenAI (1,024-token minimum, 128-token increments) only part of the static text would be cacheable.
+- **Offline planner:** no model call, so `llmCalls` stays 0. `demo.ps1 caching` says so and stops.
+- Policy files are summarised by hand in the digest; if a policy changes, update the digest in the same commit.
+**Projected impact (estimates, not measured in this POC)**
+
+| Metric | Without caching | With caching (projected) |
+|---|---|---|
+| Input-token cost | Full price on every turn | About 50-75% lower over a multi-turn session; the discount on cached tokens is provider-specific (roughly 50% to 90%) |
+| TTFT | Large static context re-processed each turn | Lower on turns 2+; the "up to 70%" figure is an estimate to validate |
+| Tool selection | Long context may dilute tool attention | Hypothesis only: caching saves compute and does not change what the model attends to. Measure with the golden-dataset eval (NFR-4) |
+
+Demo: `scripts/demo.ps1 caching [customerId] [turns]` (and `demo.sh caching`) sends the same question N times and prints LLM round trips, latency, prompt tokens and the cached-token delta. Remaining verification: an A/B run (`AGENT_PROMPT_CACHING=true` and `false`) on OpenAI, where cached tokens are reported.
+
+### 4.7 LLM Orchestration: Single-Pass vs Agentic (FR-3.8)
+
+**Problem measured live (Gemini, containerized stack):** in agentic mode Spring AI makes one model call per planning step: pick a tool, read its result, pick the next, then answer. That was 2 to 5 sequential calls per turn. On `gemini-3.1-pro-preview` (a thinking model) each call took 10 to 30 s, so a turn took 19 to 105 s. The tools themselves took under 40 ms in total.
+
+**Single-pass (default):**
+1. `DeterministicReplayAgent` runs the tool plan for the intent (profile, retrieval, waiver rules, escalation) and drafts a grounded reply. All decisions, citations and escalations are fixed here, in Java.
+2. `SingleCallSynthesizer` makes exactly one model call through `synthesisChatClient` (no tools registered). The system message is the static synthesis prefix; the user message holds the verified facts, retrieved snippets (id, authority, superseded flag, content up to 700 characters) and the draft. Options: `max_tokens` 1024, `reasoning_effort` from `AGENT_LLM_REASONING_EFFORT` (`low` for Gemini; empty for `gpt-4o`, which rejects it).
+3. The call runs on a virtual thread with a hard timeout (`agent.llm.synthesis.timeout-ms`, 8 s). Request attributes and MDC are propagated, so the round trip still appears in the trace and logs.
+4. `AgentChatController.runSinglePass` accepts the rewrite only if every cited id was retrieved, the draft's citations were not all dropped, and it does not claim an approval without an `APPROVED` rule result. A reply cut off by `max_tokens` (`finish_reason=length`) is also discarded. Otherwise the deterministic draft is returned and the trace says why (`LLM_SYNTHESIS_REJECTED (...)`, `LLM_SYNTHESIS_TIMEOUT`, `LLM_SYNTHESIS_TRUNCATED`, `LLM_SYNTHESIS_FAILED`). A provider failure therefore never produces `PARTIAL`.
+5. The synthesis prompt forbids claiming a bill or ledger change (an autonomous approval only writes `audit_log`) and adding ticket details that are not in the facts. Added after a live reply said the waiver was "recorded in your billing ledger".
+
+**Trade-off:** single-pass gives up model-driven tool planning (FR-3.1) for a fixed keyword plan. That plan is the one already tested across all 11 seeded scenarios. In exchange, escalation becomes deterministic: in one agentic run on Pro, the model skipped `escalateWithSummary` for Marcus's SLA breach, and in an agentic run on Flash-Lite it escalated Jordan's clean tier denial. `agentic` stays available for comparison and for open-ended questions the keyword plan does not cover.
+
+### 4.8 Provider Integration, Rate Limits & Observability (FR-3.9, FR-7.4)
+
+- **Gemini via the OpenAI-compatible endpoint:** base URL `https://generativelanguage.googleapis.com/v1beta/openai`, path `/chat/completions`. Gemini 3 returns `tool_calls[].extra_content.google.thought_signature` and rejects the next request (HTTP 400 "missing a thought_signature") if it is not sent back. Spring AI 1.0 drops the field, so `GeminiThoughtSignatureInterceptor` stores signatures by tool-call id from each response and re-attaches them on the next request (`GeminiCompatConfig`, active only when the base URL is Gemini's). Needed for agentic mode only.
+- **Retries:** `spring.ai.retry` is bounded to 3 attempts on HTTP 429/503 with 1 s, then 2 s waits (the Spring AI default is 10 attempts with waits up to 3 minutes). Quota errors do not recover by waiting: free tier is 20 requests per model per day (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`) and 0 for Pro; a depleted prepaid balance returns HTTP 402.
+- **Client pacing:** `demo.ps1`, `demo.sh` and `demo-smoke.ps1` honour `CHAT_PACE_SECONDS` (minimum gap between chat calls) and, in `demo.ps1`/`demo.sh`, retry a provider-rejected turn once after `CHAT_RETRY_WAIT_SECONDS` (default 30). Server-side throttling (a bulkhead around the model call) is not built; it is a production item.
+- **Logging:** `logback-spring.xml` writes console lines with `[sessionId customerId]` from MDC. `AgentChatController` logs `Turn started` and `Turn finished` (status, latency, tools, citations, LLM round trips and model milliseconds). `LlmCallLoggingInterceptor` logs every model call with HTTP status, duration and raw provider usage, and adds `LLM_ROUND_TRIP #n (HTTP 200)` with its latency to the reasoning trace.
+
+---
+## 5. Docker Compose Container Topology
+
+| Container Name | Image | Port(s) | Role in Live Demo |
+|---|---|---|---|
+| `warehouse-db` | `postgres:16-alpine` | `5432` | Simulates Snowflake analytical tables with `wal_level=logical` enabled. |
+| `kafka` | `apache/kafka:3.7.0` | `9092` (host), `29092` (containers) | Single-node KRaft broker hosting CDC topics, retry topics and `.DLT` error queues. |
+| `debezium` | `debezium/connect:2.6` | `8083` | Streams WAL changes from `warehouse-db` into `kafka` topics. Connector is registered by the app on startup. |
+| `redis` | `redis:7-alpine` | `6379` | Sub-millisecond L1 operational profile cache and event deduplication store. |
+| `servicing-agent-app` | Custom JDK 21 image | `8080` | Spring Boot + Spring AI engine exposing Swagger UI at `http://localhost:8080/swagger-ui.html`. |
+
+---
+
+## 6. Key Architectural Decisions & Rationale
+
+### Why CDC + Redis instead of direct Snowflake queries?
+Analytical warehouses like Snowflake are optimized for OLAP aggregations, not sub-100ms point lookups inside a conversational loop. Synchronous queries add 3–5 seconds of latency per turn. The CDC pipeline asynchronously hydrates a Redis L1 cache so the agent reads customer state in <1ms.
+
+### How do we handle dormant accounts or cache misses?
+While active users are served instantly from Redis, cold cache misses (e.g., a customer returning after 12 months) trigger a bounded, single-row indexed point lookup against the warehouse, asynchronously re-hydrating Redis on-demand without breaking the <1.5s P95 chat latency target.
+
+Implementation rules:
+- **Bounded:** three point lookups by `customer_id` (customer PK, 10 newest ledger rows, unresolved tickets), each with a 1s query timeout; Hikari connection timeout 2s. Configured under `agent.cache-miss.*`.
+- **Asynchronous re-hydration:** Redis is written on a virtual thread with `SET NX`, so the turn does not wait, and a profile the CDC consumer wrote in the meantime is never overwritten by the older snapshot. The snapshot carries `lastAppliedLsn = 0`, so any later CDC event still applies.
+- **Once per turn:** the fetched profile is memoised for the rest of the turn.
+- **Observable:** the trace shows `TOOL_CALL: getCustomerState (CACHE_MISS -> WAREHOUSE_FALLBACK)` and the KPI report counts `cacheMissFallbacks`. `DELETE /api/demo/cache/{customerId}` simulates a dormant account for the demo.
+- **Unknown customer:** if the warehouse has no row either, the turn returns `PARTIAL` with a fallback message.
+
+### Why deterministic Java rules instead of LLM for eligibility?
+LLMs are probabilistic — they can hallucinate approvals or be bypassed via prompt injection. Financial decisions (fee waivers, SLA credits) require deterministic, auditable, legally defensible outcomes. Deterministic Java beans run before the LLM formulates its response.
+
+### Why mandatory `[doc_id]` citations?
+Citations enforce groundedness. Without them, the LLM can generate plausible-sounding but fabricated policy guidance. Inline citations allow compliance auditors to verify every claim against source documents; citations not returned by retrieval are dropped and counted as violations.
+
+### Why authority-weighted hybrid RAG?
+Combining dense vector search (semantic intent) with BM25 lexical recall (exact error codes like `ERR-504-GW`) ensures high precision. Metadata authority boosting ensures active `CANONICAL_POLICY` documents always override archived or outdated `HISTORICAL_CASE` notes.
+
+Implementation: score = 0.6 × normalised BM25 (IDF-weighted, section headings weighted 3×) + 0.4 × dense cosine; canonical × 2.0, superseded cases × 0.5. The POC's dense signal is a local hashed character-trigram embedding so the stack runs offline; replacing `embed()` with a real embedding model is the production swap. Retrieval confidence (0–1) is the IDF-weighted share of matched query terms, scaled until the matched IDF mass reaches 4.0 (about two rare terms); an exact identifier hit (e.g. `ERR-504-GW`, `sec-4.2`) counts as 0.9. Below 0.72 the tool returns `lowConfidence=true` and the escalation tool treats it as a trigger.
+
+### Why prompt caching of a static prefix?
+Every agent turn re-sends the system prompt, tool schemas and (in the target design) a policy digest and few-shot examples, then adds a few hundred tokens that actually change. Providers bill and process a repeated exact prefix at a discount, so separating static from dynamic content lowers input cost and TTFT on turns 2+ of a multi-turn session. The trade-off is discipline: the prefix must stay byte-stable (no customer data, no timestamps, fixed tool order), and cache TTLs are short. It does not change any business decision: eligibility, escalation and citations remain in deterministic Java. Status and open decisions: §4.6.
+### Why single-pass LLM orchestration instead of letting the model call tools?
+Every model-driven tool step is another full model round trip, and those run in sequence. Measured on Gemini, that turned a turn whose tools take under 40 ms into 2 to 5 model calls and 4 to 105 s. Running the tool plan in Java and calling the model once keeps decisions deterministic, puts a hard upper bound on latency (8 s timeout, then the deterministic draft) and costs one request per turn against provider quotas. The cost is a fixed keyword plan instead of model-chosen tools. §4.7 has the details.
+
+### Why Gemini 3.1 Flash-Lite for the live demo?
+It was the fastest model that wrote acceptable replies: 1.4 to 2.7 s per single-pass turn (one call) against 4 to 8 s on `gemini-3.1-pro-preview`. Pro adds thinking time (about 650 thinking tokens on a 155-token reply) that a rewrite of verified facts does not need, and 3 of 4 Pro turns hit the 8 s timeout. Accuracy is not a differentiator in single-pass, because Java fixes the decisions and citations either way. The full comparison is in the table below.
+
+Measured in the containerized stack on 2026-11-20, same four persona questions (Elena waiver, Marcus ERR-504-GW, Jordan denial, waiver-limit question):
+
+| Model / setting | Orchestration | Per turn | Model calls | Result |
+|---|---|---|---|---|
+| `gemini-3.1-flash-lite`, `reasoning_effort=low` | single-pass | **1.4-2.7 s** (one 4.5 s outlier) | 1 | All replies accepted after a prompt fix; ~1,400-1,600 prompt tokens |
+| `gemini-3.1-pro-preview`, `low`, `max_tokens=400` | single-pass | 4.1-4.6 s | 1 | All 4 replies cut off: thinking tokens used up the output budget |
+| `gemini-3.1-pro-preview`, `low`, `max_tokens=1024` | single-pass | ~7.5 s per call | 1 | 3 of 4 turns hit the 8 s timeout and returned the draft; ~650 thinking tokens for a 155-token reply |
+| `gemini-3.1-flash-lite` | agentic | 3.6-5.9 s | 2-5 | Correct tools; escalated one clean denial |
+| `gemini-3.1-pro-preview` | agentic | 18.8-105 s | 3-4 | Correct answers, too slow for chat; skipped one SLA escalation with the prefix off |
+| `gemini-3.5-flash` | agentic | not completed | - | Free-tier daily quota (20 requests) used up mid-run |
+| `gemini-1.5-pro`, `2.0-flash`, `2.5-flash`, `2.5-pro` | - | - | - | HTTP 404: not available to new API keys |
+| OpenAI `gpt-4o` | - | - | - | Not run: the account had no credits |
+
+Parameters tested: `reasoning_effort` (low; leave empty for `gpt-4o`, which rejects it), `max_tokens` (400 truncated Pro; 1024 is the default), synthesis timeout (8 s), prompt caching on and off, single-pass vs agentic, and client pacing (`CHAT_PACE_SECONDS` 5 to 20 s). Operational findings: free-tier keys allow about 20 requests per model per day and 0 for Pro; a depleted prepaid balance returns HTTP 402; Gemini 3 agentic tool calling needs the thought-signature interceptor (§4.8).
+
+### Why Virtual Threads (JDK 21) instead of reactive programming?
+Virtual Threads provide the concurrency benefits of reactive I/O (no platform thread starvation under load) with the readability of standard imperative Java.
+
+---
+
+## 7. Enterprise Security, Human-in-the-Loop Governance & Cloud Deployment Topology
+
+### 7.1 OAuth2 / OIDC RBAC & Human-in-the-Loop (`AdminOverrideController`)
+
+- **Spring Security OAuth2 Resource Server:** Validates JWT bearer tokens from corporate IdPs when `OAUTH2_ISSUER_URI` is set (issuer metadata resolved on first token, so startup does not depend on the IdP). Customer chat endpoints require `SCOPE_customer.chat`, while `/api/admin/**` enforces `@PreAuthorize("!@adminAccess.jwtEnabled() or hasAuthority('SCOPE_servicing.supervisor')")` (the scope check applies whenever an issuer is configured). `/api/demo/**`, Swagger and health stay open in JWT mode for the demo. Without an issuer (local demo) all endpoints are open and overrides are audited as `demo-mode-no-idp`.
+- **Discretionary Policy Overrides (`POST /api/admin/overrides/waiver`):** Enables supervisors to approve out-of-policy credits (e.g., > $50.00). In one transaction: marks the invoice `WAIVED`, increments `waivers_used_12m`, and appends an immutable `audit_log` row (JWT `sub`, customer, invoice, amount, justification, timestamp). Redis is patched immediately and converges with the CDC event.
+- **Dead Letter Topic Replay (`POST /api/admin/kafka/dlt/replay`):** Allows authorized operators to inspect poison-pill headers in `*.DLT` topics and safely re-publish corrected payloads. Only the three CDC dead-letter topics are accepted.
+
+### 7.2 Production Cloud Deployment (AWS EKS Defense-in-Depth)
+
+- **Network & Data Perimeter:** `servicing-agent-app` (EKS), Apache Kafka (Amazon MSK), and Redis (ElastiCache) run in private subnets with zero public internet exposure; warehouse traffic traverses AWS PrivateLink to Snowflake.
+- **Identity, Secrets & Encryption:** EKS IRSA for secretless IAM access; mTLS across brokers; KMS CMK encryption at rest.
+- **AI Boundary & LLMOps Evaluation:** `PiiSanitizer` redacts sensitive fields prior to invoking private Zero-Data-Retention (ZDR) Bedrock or Vertex AI endpoints. Model updates are gated in CI/CD via MLflow Evaluate / Spring AI Evaluators against a golden dataset of scrubbed historical transcripts before promotion.
+
+---
+
+## 8. Requirements Traceability & Verification
+
+Status as of 2026-11-20. "Verified" means a test or live check asserts the requirement's own expected values, not just that the code runs. Tests are in `src/test/java`; the live checks are `scripts/demo-smoke.ps1` (22 checks against the running stack) and `scripts/demo.ps1 scenarios` (11 seeded questions).
+
+| Req | Implementation | Verified by | Status |
+|---|---|---|---|
+| FR-1.1 CDC to Kafka | Debezium connector (auto-registered), `compose.yaml` | Smoke: inserted charge reaches Redis in 0.5–2 s (includes 0.5–1 s polling) | Done; the 500 ms WAL→Kafka target is not measured separately |
+| FR-1.2 Dedup + LSN | `IdempotentKafkaConsumer` (payload-derived event id, per-row LSN guard) | `IdempotentKafkaConsumerTest`: duplicate skipped, stale LSN skipped, older event from another table still applied, dedup key released on failure | Done |
+| FR-1.3 Retries + DLT | `KafkaResiliencyConfig` retry topics 1s/2s/4s → `.DLT` | `DeadLetterRoutingTest` (embedded broker): ≥ 6.5 s backoff, exception headers, healthy record behind poison pill still applied; live `demo.ps1 poison` | Done |
+| FR-1.4 Mutation endpoint | `DemoMutationController` (+ customers, tickets, updates for seeding) | Smoke step 1; `demo.ps1 seed` | Done |
+| FR-2.1 PII masking | `PiiSanitizer` before trace, tools and LLM | `PiiSanitizerTest` | Done (regex; no NER) |
+| FR-2.2 Validation → 400 | Bean Validation + `GlobalExceptionHandler` | `DemoScenariosTest.malformedRequestReturnsStructured400`, `seedEndpointsValidateInput` | Done |
+| FR-3.1 ChatClient + tools | `SpringAiConfig`, 5 `@Tool` methods | Live, agentic mode on Gemini (`gemini-3.1-flash-lite`, `gemini-3.1-pro-preview`) in containers: correct tool chains for Elena, Marcus and Jordan | **Done, not the default**: agentic is 2 to 5 model calls per turn; Pro skipped one escalation and Flash-Lite added one. Default is single-pass (FR-3.8) |
+| FR-3.2 Redis reads | `CustomerContextTools` | `CustomerContextToolsTest.cacheHitNeverTouchesWarehouse` | Done |
+| FR-3.3 Virtual threads | `spring.threads.virtual.enabled=true` | Configuration only | **Partial**: request/listener threads are virtual; tools within a turn run sequentially (Spring AI executes tool calls in order); no load test |
+| FR-3.4 Cache-miss fallback | `CustomerContextTools` + `WarehouseFallbackRepository` | `CustomerContextToolsTest` (single fallback per turn, async re-hydration, never overwrites CDC); `DemoScenariosTest.cacheMissUsesWarehouseFallback`; smoke (9 ms turn on miss) | Done |
+| FR-3.5 to FR-3.7 Prompt caching | `StaticPromptPrefix`, `CacheUsageRecorder`, `KpiMetricsService.recordLlmUsage`, `agent.prompt-caching.*` (§4.6) | `StaticPromptPrefixTest`, `CacheUsageRecorderTest`; live: same prefix hash on every turn, `demo.ps1 caching` | **Done in code; savings unmeasured.** Gemini's OpenAI-compatible endpoint reports no cached tokens; OpenAI not run |
+| FR-3.8 Single model call per turn | `SingleCallSynthesizer`, `synthesisChatClient`, `AgentChatController.runSinglePass` | `SinglePassModeTest` (one call, draft fallback on failure, rejects unknown citation and unbacked approval); live in containers: 1 `LLM_ROUND_TRIP` per turn, 1.4 to 2.7 s on Flash-Lite | Done |
+| FR-3.9 Rate-limit resilience | `spring.ai.retry.*`; `CHAT_PACE_SECONDS` / `CHAT_RETRY_WAIT_SECONDS` in the scripts | Live paced runs without 429; scripts syntax-checked; offline paced run of 11 scenarios | Done for the demo; no server-side bulkhead |
+| FR-4.1 Hybrid retrieval | `KnowledgeRetrievalTools` BM25 + dense | `KnowledgeRetrievalToolsTest` (sec-4.2, ERR-504-GW, SLA credit, low-confidence) | **Partial**: dense signal is a local trigram stand-in, not an embedding model |
+| FR-4.2 Pre-filter + authority | Authority weighting (canonical ×2.0, superseded ×0.5) | `errorCodeRanksCanonicalFixAboveSupersededCase` | **Partial**: no `account_tier` / `is_active_policy` pre-filter. Policies are not tier-tagged, and inactive cases are down-weighted rather than excluded so FR-4.3 can cite them |
+| FR-4.3 Supersession | `superseded` flag + `guidance` field; strong superseded matches surfaced | Retrieval test + Marcus/Lena scenarios ("superseded" in reply) | Done |
+| FR-5.1–5.3 Deterministic rules | `DeterministicRulesTools.evaluate(profile, amount)` | `DeterministicRulesToolsTest`: every reason code incl. $50.00 / 12-month boundaries | Done. Tool is `evaluateWaiverRules(customerId, amount)`; result also carries `explanation` |
+| FR-6.1 Escalation triggers | `EscalationTools` (SLA breach, frustration keywords, confidence < 0.72, agent-forced) | `EscalationToolsTest` (5 cases); seeded Sam/Lena/Priya/Marcus | Done; frustration is a keyword list, not a sentiment model |
+| FR-6.2 Handoff card | `AgentHandoffCard` | `EscalationToolsTest`, `scenario2_slaBreachAndErr504EscalatesWithHandoffCard` | Done |
+| FR-7.1 AgentTurnReport | `AgentChatController` + `TurnState` | `DemoScenariosTest` (all scenarios) | Done |
+| FR-7.2 KPI report + tool | `GET /api/agent/reports/kpis`, `ReportingTools.getDeflectionReport` | `kpiReportAggregatesTurns`; smoke | Done. Deflection = turns resolved without escalation, not the 72 h zero-re-contact KPI; the tool is only reachable in LLM mode |
+| FR-7.4 Turn and LLM-call logging | `logback-spring.xml`, `LlmCallLoggingInterceptor`, controller `Turn started/finished` | Live: `docker logs` shows both lines with `[sessionId customerId]`; trace shows `LLM_ROUND_TRIP` | Done |
+| FR-7.3 Swagger UI | springdoc, bearer scheme | Live: `/swagger-ui.html` 200 | Done |
+| FR-8.1 OAuth2 RBAC | `SecurityConfig`, `@PreAuthorize` | `SecurityJwtModeTest`: 401 without token, 403 wrong scope, 200 supervisor | Done (open in no-IdP demo mode) |
+| FR-8.2 Override + audit | `AdminOverrideService`, `AuditService`, append-only trigger | JWT `sub` recorded (`SecurityJwtModeTest`); smoke: audit row, DELETE rejected, WAIVED reaches Redis | Done |
+| FR-8.3 DLT replay | `DltService`, `/api/admin/kafka/dlt[/replay]` | `DeadLetterRoutingTest` (depth 1 → replay → 0); live | Done |
+| NFR-1 Offline | Offline planner, local embeddings, no key needed | All scenarios run offline | Done; Ollama not wired (an OpenAI-compatible Ollama URL may work, untested) |
+| NFR-2 Footprint / start | 512 MB app heap | Stack healthy about 1 min after a cached build | Not formally measured |
+| NFR-3 Externalized config | `application.yml` `agent.*`, Markdown policies | Review | Done |
+| NFR-4 Cloud / LLMOps | Documented in §7 | — | Out of POC runtime scope |
+
+### Measured in the POC (local laptop, offline planner)
+
+| Measure | Result |
+|---|---|
+| Agent turn latency | 2–65 ms (cache hit and cache-miss fallback) |
+| Warehouse insert → Redis via CDC | 0.5–2 s |
+| Seeding 8 customers (17 inserts) | ~1 s incl. CDC delivery |
+| Seeded scenarios | 11 questions: 7 resolved, 4 escalated, compliance score 100% |
+| Poison pill → DLT | ~8 s (1 + 2 + 4 s backoff) |
+| Automated tests | 69 (67 pass, 2 live LLM tests skip without a key) |
+| Live, single-pass, `gemini-3.1-flash-lite`, `reasoning_effort=low` | 1.4 to 2.7 s per turn (one 4.5 s outlier), 1 model call, about 1,400 to 1,600 prompt tokens; all replies accepted after the prompt fix |
+| Live, single-pass, `gemini-3.1-pro-preview` | `max_tokens=400`: 4.1 to 4.6 s, all 4 replies cut off by thinking tokens. `max_tokens=1024`: 7.5 s per call, 3 of 4 turns hit the 8 s timeout and returned the draft |
+| Live, agentic, `gemini-3.1-flash-lite` | 3.6 to 5.9 s, 2 to 5 model calls per turn (0.6 to 2.9 s each) |
+| Live, agentic, `gemini-3.1-pro-preview` | 18.8 to 105 s per turn, 3 to 4 model calls; one turn exceeded the 180 s client timeout |
+
+### Known gaps and next steps
+
+1. Live LLM mode has been run on Gemini only (FR-3.1, FR-3.8). With the model in the loop a turn takes 1.4 to 2.7 s, above the <1.5s P95 target; streaming the reply would cut time-to-first-token but is not built.
+2. Replace the trigram vector with a real embedding model (FR-4.1).
+3. Decide whether FR-4.2's metadata pre-filter is still required; if so, tag policies by tier.
+4. Measure WAL→Kafka latency (FR-1.1) and P95 turn latency under load (KPI table).
+5. Optional: a CI step or editor hook that runs `mvnw test` when a `*Tools.java` file changes.
+6. Autonomous waiver approvals are written to `audit_log` only. `requirements.md` §5 says the approval is "recorded in the operational state store"; Redis is not updated on an autonomous approval (supervisor overrides do update it).
+7. `/api/demo/**` is open even in JWT mode; remove or protect it outside a demo.
+8. Prompt caching (FR-3.5 to FR-3.7) savings are unmeasured: Gemini does not report cached tokens and OpenAI was not run. Run the A/B comparison on OpenAI, or read Gemini's native usage metadata (§4.6).
+9. No server-side throttle (bulkhead) around the model call; only client pacing and bounded retries (FR-3.9).
+10. Single-pass uses the keyword tool plan; questions outside its intents get the general account summary. Agentic mode covers them at the cost of latency.
+
+---
+
+## Changelog
+
+| Date | Author | Change |
+|---|---|---|
+| 2025-07-14 | Initial | Spec created from source documents (design.md, java_implementation_code.md, presentation_talking_points.md) |
+| 2026-11-17 | Update | Synchronized from source docs; added Living Document header, Section 6 Architectural Decisions & Rationale, Changelog |
+| 2026-11-18 | Update | Added `SecurityConfig.java` and `AdminOverrideController.java`; Section 7 (OAuth2 RBAC, HITL, AWS EKS Defense-in-Depth, MLflow LLMOps); v1.2 |
+| 2026-11-18 | Update | Asymmetric Cache-Miss Fallback (architecture, sequence diagram, §3.2, §6); authority-weighted hybrid RAG rationale |
+| 2026-11-18 | Implementation | v1.3: recorded as-built details — retry topics, payload-derived event ids and per-row LSN guards, DLT inspect/replay, ReportingTools, offline replay planner, TurnState-driven reports, audit_log, connector auto-registration, demo cache eviction, Spring Boot 3.5 |
+| 2026-11-19 | Implementation | Demo seeding: scripts/demo.ps1 + demo.sh, seed-data.txt (8 customers), demo endpoints for customers, tickets, profile and poison pill; chunks indexed with their document title |
+| 2026-11-19 | Verification | v1.4: §8 Requirements Traceability & Verification (status per FR/NFR, measured results, known gaps); §4.4 latency marked illustrative |
+| 2026-11-19 | Scope | v1.5: §4.6 Prompt Caching (static prefix / dynamic suffix, FR-3.5 to FR-3.7), rationale in §6, traceability row and known gap; Affects Slides 3, 5 and Q&A |
+| 2026-11-19 | Implementation | v1.5: prompt caching built: `prompt/` package, `prompts/*.md`, `agent.prompt-caching.*` switch, cache metrics in the KPI report; 59 tests. Unmeasured against a real provider. Affects Slides 3, 5 and Q&A |
+| 2026-11-20 | Implementation | v1.6: live Gemini runs in containers; §4.7 single-pass orchestration (FR-3.8), §4.8 Gemini thought signatures, bounded retries, pacing, logging (FR-3.9, FR-7.4); model choice (Flash-Lite); §4.6 cached-token findings; §8 measured live results; 69 tests. Affects Slides 3, 5, 8 and Q&A |
+
+> **How to use this changelog:** Add a row for every architectural decision — component swaps, new tools added to the agent, latency target adjustments, schema changes. Reference the slide number it affects so the deck stays in sync.

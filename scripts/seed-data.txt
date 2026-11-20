@@ -1,0 +1,55 @@
+# Extra test data, loaded by:  scripts/demo.ps1 seed   (or: scripts/demo.sh seed)
+# Adds 8 customers on top of the 3 personas in init.sql, covering every reachable
+# waiver outcome and every escalation trigger except low retrieval confidence.
+#
+# Line format:
+#   POST <path> <json body>      -> sent to the app (all inserts go to Postgres and reach Redis via CDC)
+#   CHAT <customerId> <message>  -> suggested question, run by:  scripts/demo.ps1 scenarios
+# Customers that already exist are skipped together with their charges and tickets,
+# so seeding twice is safe. Add your own lines in the same format.
+
+# Noah Patel: Gold, 18 months, no waivers, $20 late fee -> APPROVED
+POST /api/demo/customers {"customerId":"cust_222","fullName":"Noah Patel","accountTier":"Gold","tenureMonths":18,"mrr":349.00,"waiversUsed12m":0}
+POST /api/demo/mutate {"customerId":"cust_222","chargeType":"LATE_FEE","amount":20.00,"description":"Late payment fee"}
+CHAT cust_222 Can you waive my late fee?
+
+# Priya Nair: Gold but only 8 months -> TENURE_TOO_SHORT -> Tier-2 review (policy 4.3)
+POST /api/demo/customers {"customerId":"cust_321","fullName":"Priya Nair","accountTier":"Gold","tenureMonths":8,"mrr":299.00,"waiversUsed12m":0}
+POST /api/demo/mutate {"customerId":"cust_321","chargeType":"LATE_FEE","amount":30.00,"description":"Late payment fee"}
+CHAT cust_321 Can you waive my $30 late fee?
+
+# Diego Alvarez: Enterprise, $75 late fee -> FEE_TOO_HIGH (supervisor override candidate)
+POST /api/demo/customers {"customerId":"cust_654","fullName":"Diego Alvarez","accountTier":"Enterprise","tenureMonths":60,"mrr":3200.00,"waiversUsed12m":0}
+POST /api/demo/mutate {"customerId":"cust_654","chargeType":"LATE_FEE","amount":75.00,"description":"Late payment fee, two cycles"}
+CHAT cust_654 Please waive the $75 late fee
+
+# Omar Haddad: Standard, 3 months -> TIER_INELIGIBLE
+POST /api/demo/customers {"customerId":"cust_444","fullName":"Omar Haddad","accountTier":"Standard","tenureMonths":3,"mrr":29.00,"waiversUsed12m":0}
+POST /api/demo/mutate {"customerId":"cust_444","chargeType":"LATE_FEE","amount":15.00,"description":"Late payment fee"}
+CHAT cust_444 Can you waive my late fee?
+
+# Mia Rossi: Gold, already used her waiver -> WAIVER_LIMIT_REACHED
+POST /api/demo/customers {"customerId":"cust_555","fullName":"Mia Rossi","accountTier":"Gold","tenureMonths":26,"mrr":499.00,"waiversUsed12m":1}
+POST /api/demo/mutate {"customerId":"cust_555","chargeType":"LATE_FEE","amount":40.00,"description":"Late payment fee"}
+CHAT cust_555 Can you waive my $40 late fee?
+
+# Sam Okafor: overage charge, angry customer -> HIGH_FRUSTRATION escalation
+POST /api/demo/customers {"customerId":"cust_987","fullName":"Sam Okafor","accountTier":"Gold","tenureMonths":24,"mrr":599.00,"waiversUsed12m":0}
+POST /api/demo/mutate {"customerId":"cust_987","chargeType":"OVERAGE","amount":120.00,"description":"API overage, October"}
+POST /api/demo/tickets {"customerId":"cust_987","category":"BILLING","subject":"Disputing October overage","status":"OPEN","slaHoursFromNow":48}
+CHAT cust_987 This is unacceptable, I was overcharged $120 again and I am fed up
+
+# Lena Fischer: ERR-504-GW ticket blocked on engineering, 2h past SLA -> SLA_BREACH escalation
+POST /api/demo/customers {"customerId":"cust_333","fullName":"Lena Fischer","accountTier":"Enterprise","tenureMonths":40,"mrr":2100.00,"waiversUsed12m":0}
+POST /api/demo/tickets {"customerId":"cust_333","category":"GATEWAY_OUTAGE","subject":"EU edge gateway returning ERR-504-GW","status":"PENDING_ENGINEERING","slaHoursFromNow":-2}
+CHAT cust_333 We are still getting ERR-504-GW on the EU gateway, how do we fix it?
+
+# Ava Chen: policy question, no open issues -> answered from sla_credit_policy.md
+POST /api/demo/customers {"customerId":"cust_111","fullName":"Ava Chen","accountTier":"Enterprise","tenureMonths":30,"mrr":1999.00,"waiversUsed12m":0}
+POST /api/demo/mutate {"customerId":"cust_111","chargeType":"SUBSCRIPTION","amount":1999.00,"description":"Monthly platform fee"}
+CHAT cust_111 What SLA credit do I get for a P1 outage longer than 4 hours?
+
+# Core personas from init.sql (no inserts needed)
+CHAT cust_123 Why is my bill $45 higher, and can you waive it?
+CHAT cust_456 My gateway is throwing ERR-504-GW, what should I do?
+CHAT cust_789 Can you waive my late fee?

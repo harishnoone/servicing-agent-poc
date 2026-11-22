@@ -42,8 +42,6 @@ Every functional requirement maps directly to one or more of the following spons
 
 **FR-1.4:** THE SYSTEM SHALL expose a simulation endpoint (`POST /api/demo/mutate`) allowing presenters to insert or update rows in the mock warehouse database during live demonstrations to trigger real-time CDC synchronization.
 
----
-
 **FR-1.5 (Complete profile regardless of event order):** WHEN the CDC consumer receives a customer, billing or ticket event for a customer whose Redis profile is missing or incomplete (no customer row applied yet, e.g. a ticket event delivered before the customer event, or an event after the profile was evicted), THE SYSTEM SHALL build the full profile from all three warehouse tables with one bounded lookup before applying further incremental events, and SHALL NOT serve an incomplete profile to the agent (it is treated as a cache miss). IF the warehouse lookup fails, THEN the event SHALL be retried through the retry topics instead of writing an incomplete profile.
 
 ---

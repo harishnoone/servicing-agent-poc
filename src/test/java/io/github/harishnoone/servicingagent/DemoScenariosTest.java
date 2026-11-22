@@ -253,6 +253,22 @@ class DemoScenariosTest {
         assertThat(r.path("finalResponse").asText()).doesNotContain("already have an open ticket");
     }
 
+    /** FR-1.5: a stub profile in Redis (no customer row yet) is treated as a miss, never as Standard tier. */
+    @Test
+    void stubProfileInRedisIsReadFromWarehouseNotTrusted() throws Exception {
+        put(new CustomerProfile("cust_901", "", "Standard", 0, BigDecimal.ZERO, 0, 5L, List.of(),
+                List.of(new TicketSummary("TKT-1", "BILLING", "Invoice question", "OPEN", ""))));
+        when(warehouse.findProfile("cust_901")).thenReturn(Optional.of(new CustomerProfile("cust_901", "Gold Gail",
+                "Gold", 30, BigDecimal.TEN, 0, 0L,
+                List.of(new LedgerEntry("INV-901", "LATE_FEE", new BigDecimal("30.00"), "UNPAID", "")), List.of())));
+
+        JsonNode r = chat("cust_901", "Can you waive my late fee?");
+
+        assertThat(events(r)).anyMatch(e -> e.contains("CACHE_MISS -> WAREHOUSE_FALLBACK"))
+                .contains("TOOL_CALL: evaluateWaiverRules -> APPROVED");
+        assertThat(r.at("/customerSnapshot/accountTier").asText()).isEqualTo("Gold");
+    }
+
     @Test
     void kpiReportAggregatesTurns() throws Exception {
         when(dltService.totalDepth()).thenReturn(2L);

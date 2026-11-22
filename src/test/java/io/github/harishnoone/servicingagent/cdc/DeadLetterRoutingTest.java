@@ -46,6 +46,7 @@ class DeadLetterRoutingTest {
     @Autowired KafkaTemplate<String, String> template;
     @Autowired DltService dltService;
     @MockitoBean StringRedisTemplate redis;
+    @MockitoBean io.github.harishnoone.servicingagent.cache.WarehouseFallbackRepository warehouse; // no DB here: empty -> event applied as-is
 
     private static final String GOOD = """
             {"after":{"customer_id":"cust_123","full_name":"Elena","account_tier":"Gold","tenure_months":36,

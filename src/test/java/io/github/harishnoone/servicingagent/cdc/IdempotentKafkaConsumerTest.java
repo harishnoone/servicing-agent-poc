@@ -19,18 +19,24 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /** FR-1.2: dedup, per-row LSN ordering, and dedup release on failure so retries are not lost. */
 class IdempotentKafkaConsumerTest {
 
     private final ObjectMapper mapper = new ObjectMapper();
+    private final io.github.harishnoone.servicingagent.cache.WarehouseFallbackRepository warehouse =
+            mock(io.github.harishnoone.servicingagent.cache.WarehouseFallbackRepository.class);
     private FakeRedis redis;
     private IdempotentKafkaConsumer consumer;
 
     @BeforeEach
     void setUp() {
         redis = new FakeRedis();
-        consumer = new IdempotentKafkaConsumer(redis.template, mapper);
+        consumer = new IdempotentKafkaConsumer(redis.template, mapper, warehouse);
         ReflectionTestUtils.setField(consumer, "profileKeyPrefix", "customer:profile:");
         ReflectionTestUtils.setField(consumer, "dedupKeyPrefix", "processed:event:");
         ReflectionTestUtils.setField(consumer, "dedupTtlSeconds", 86400L);
@@ -98,6 +104,63 @@ class IdempotentKafkaConsumerTest {
         assertThatThrownBy(() -> consumer.handle(customerEvent(400, 0), "db.public.customers", 1))
                 .isInstanceOf(RuntimeException.class);
         assertThat(redis.store).doesNotContainKey("processed:event:customers:400:cust_123");
+    }
+
+    // --- FR-1.5: full hydration when the cached profile is missing or incomplete -----------
+
+    private static final String TICKET_EVENT = """
+            {"after":{"ticket_id":"TCK-1","customer_id":"cust_123","category":"BILLING","subject":"Invoice question",
+             "status":"OPEN","sla_deadline":"2026-11-30T10:00:00Z"},"source":{"table":"support_tickets","lsn":900},"op":"c"}""";
+
+    private static CustomerProfile warehouseElena() {
+        return new CustomerProfile("cust_123", "Elena Vance", "Gold", 36, new java.math.BigDecimal("499.00"), 0, 0L,
+                List.of(new CustomerProfile.LedgerEntry("INV-A", "LATE_FEE", new java.math.BigDecimal("45.00"), "UNPAID", "Late fee")),
+                List.of(new CustomerProfile.TicketSummary("TCK-1", "BILLING", "Invoice question", "OPEN", "2026-11-30T10:00:00Z")));
+    }
+
+    @Test
+    void ticketBeforeCustomerHydratesAllThreeTablesFromWarehouse() throws Exception {
+        when(warehouse.findProfile("cust_123")).thenReturn(java.util.Optional.of(warehouseElena()));
+
+        consumer.handle(TICKET_EVENT, "db.public.support_tickets", 1);
+
+        CustomerProfile p = profile();
+        assertThat(p.fullName()).isEqualTo("Elena Vance");
+        assertThat(p.accountTier()).isEqualTo("Gold");
+        assertThat(p.recentCharges()).extracting(CustomerProfile.LedgerEntry::invoiceId).containsExactly("INV-A");
+        assertThat(p.activeTickets()).extracting(CustomerProfile.TicketSummary::ticketId).containsExactly("TCK-1");
+        assertThat(p.lastAppliedLsn()).isEqualTo(900);
+        assertThat(redis.store).containsEntry("lsn:support_tickets:TCK-1", "900");
+
+        consumer.handle(TICKET_EVENT.replace("\"lsn\":900", "\"lsn\":850"), "db.public.support_tickets", 2);
+        assertThat(profile().activeTickets()).singleElement().extracting(CustomerProfile.TicketSummary::status).isEqualTo("OPEN");
+    }
+
+    @Test
+    void stubFromEarlierEventIsReplacedByWarehouseProfile() throws Exception {
+        consumer.handle(billingEvent(800, "INV-A", "UNPAID"), "db.public.billing_ledger", 1); // warehouse empty -> stub
+        assertThat(IdempotentKafkaConsumer.isStub(profile())).isTrue();
+
+        when(warehouse.findProfile("cust_123")).thenReturn(java.util.Optional.of(warehouseElena()));
+        consumer.handle(TICKET_EVENT, "db.public.support_tickets", 1);
+        assertThat(IdempotentKafkaConsumer.isStub(profile())).isFalse();
+        assertThat(profile().accountTier()).isEqualTo("Gold");
+    }
+
+    @Test
+    void completeProfileNeverReadsWarehouse() {
+        consumer.handle(customerEvent(100, 0), "db.public.customers", 1);
+        consumer.handle(billingEvent(110, "INV-1", "UNPAID"), "db.public.billing_ledger", 1);
+        verify(warehouse, org.mockito.Mockito.times(1)).findProfile("cust_123"); // only for the first (missing) event
+    }
+
+    @Test
+    void warehouseFailureLeavesEventForRetryWithoutStub() {
+        when(warehouse.findProfile("cust_123")).thenThrow(new org.springframework.dao.QueryTimeoutException("timeout"));
+        assertThatThrownBy(() -> consumer.handle(TICKET_EVENT, "db.public.support_tickets", 1))
+                .isInstanceOf(org.springframework.dao.QueryTimeoutException.class);
+        assertThat(redis.store).doesNotContainKey("customer:profile:cust_123")
+                .doesNotContainKey("processed:event:support_tickets:900:TCK-1");
     }
 
     @Test

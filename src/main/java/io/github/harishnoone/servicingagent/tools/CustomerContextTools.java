@@ -94,6 +94,11 @@ public class CustomerContextTools {
             return cached;
         }
         CustomerProfile fromRedis = readRedis(customerId);
+        if (fromRedis != null && io.github.harishnoone.servicingagent.cdc.IdempotentKafkaConsumer.isStub(fromRedis)) {
+            // FR-1.5: a stub (billing/ticket rows but no customer row yet) must never drive a decision.
+            log.warn("Cached profile for {} is incomplete (no customer row yet); reading the warehouse", customerId);
+            fromRedis = null;
+        }
         if (fromRedis != null) {
             turnState.cacheProfile(customerId, fromRedis, "REDIS_HIT");
             return fromRedis;

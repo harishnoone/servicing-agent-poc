@@ -238,7 +238,7 @@ Policies are Markdown files in `src/main/resources/policies/`; each `##`/`###` s
 ## Development
 
 ```bash
-./mvnw test              # 82 tests; the 2 live-LLM tests run only when OPENAI_API_KEY is set
+./mvnw test              # 87 tests; the 2 live-LLM tests run only when OPENAI_API_KEY is set
 ./mvnw spring-boot:run   # app on the host; start the infra first: docker compose up -d warehouse-db kafka debezium redis
 ```
 

@@ -44,6 +44,10 @@ Every functional requirement maps directly to one or more of the following spons
 
 ---
 
+**FR-1.5 (Complete profile regardless of event order):** WHEN the CDC consumer receives a customer, billing or ticket event for a customer whose Redis profile is missing or incomplete (no customer row applied yet, e.g. a ticket event delivered before the customer event, or an event after the profile was evicted), THE SYSTEM SHALL build the full profile from all three warehouse tables with one bounded lookup before applying further incremental events, and SHALL NOT serve an incomplete profile to the agent (it is treated as a cache miss). IF the warehouse lookup fails, THEN the event SHALL be retried through the retry topics instead of writing an incomplete profile.
+
+---
+
 ### Requirement 2: Ingress Guardrails & PII Sanitization
 
 **FR-2.1:** WHEN a customer message arrives at `POST /api/agent/chat`, THE SYSTEM SHALL execute a deterministic PII masking filter (redacting SSNs, payment card numbers, and raw API keys) prior to logging, telemetry emission, or LLM prompt assembly.
@@ -197,6 +201,6 @@ Non-functional targets (to be confirmed by measurement): added latency per gated
 | 2026-11-20 | Fix | Restored Requirements 4 to 8, accidentally removed by an edit on 2026-11-19, from the v1.3 text (unchanged since) |
 | 2026-11-19 | Update | Compose file name (`compose.yaml`); implementation status of every requirement is tracked in design.md §8 |
 | 2026-11-21 | Scope | Added decision-model screening/triage/grading to Out-of-Scope as a production scale-up item, per design.md §6. Added §6 Future Requirements (FR-F1 to FR-F6, planned only), per design.md §9 |
-| 2026-11-21 | Scope | Added FR-6.3 (existing-ticket recognition), FR-6.4 (no duplicate tickets for the same problem) and FR-7.5 (CDC consume logging); implemented and verified per design.md §8 |
+| 2026-11-21 | Scope | Added FR-1.5 (complete profile regardless of CDC event order or eviction); implemented, verified in tests per design.md §8 | (existing-ticket recognition), FR-6.4 (no duplicate tickets for the same problem) and FR-7.5 (CDC consume logging); implemented and verified per design.md §8 |
 
 > **How to use this changelog:** Add a row every time a requirement is added, removed, or its target/threshold changes. Include the reason (e.g., "Panel feedback: tightened deflection target to 40% minimum after Q&A rehearsal").

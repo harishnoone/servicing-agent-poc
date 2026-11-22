@@ -2,6 +2,7 @@ package io.github.harishnoone.servicingagent.cdc;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.harishnoone.servicingagent.cache.WarehouseFallbackRepository;
 import io.github.harishnoone.servicingagent.model.CustomerProfile;
 import io.github.harishnoone.servicingagent.model.CustomerProfile.LedgerEntry;
 import io.github.harishnoone.servicingagent.model.CustomerProfile.TicketSummary;
@@ -58,6 +59,7 @@ public class IdempotentKafkaConsumer {
 
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
+    private final WarehouseFallbackRepository warehouse;
     private final ReentrantLock[] locks = new ReentrantLock[LOCK_STRIPES];
 
     @Value("${agent.redis.profile-key-prefix:customer:profile:}")
@@ -69,9 +71,11 @@ public class IdempotentKafkaConsumer {
     @Value("${agent.redis.dedup-ttl-seconds:86400}")
     private long dedupTtlSeconds;
 
-    public IdempotentKafkaConsumer(StringRedisTemplate redis, ObjectMapper objectMapper) {
+    public IdempotentKafkaConsumer(StringRedisTemplate redis, ObjectMapper objectMapper,
+                                   WarehouseFallbackRepository warehouse) {
         this.redis = redis;
         this.objectMapper = objectMapper;
+        this.warehouse = warehouse;
         for (int i = 0; i < LOCK_STRIPES; i++) {
             locks[i] = new ReentrantLock();
         }
@@ -131,7 +135,8 @@ public class IdempotentKafkaConsumer {
             ReentrantLock lock = locks[Math.floorMod(customerId.hashCode(), LOCK_STRIPES)];
             lock.lock();
             try {
-                String outcome = switch (table) {
+                String outcome = hydrateIfIncomplete(customerId, table, pk, lsn);
+                if (outcome == null) outcome = switch (table) {
                     case "customers"       -> applyCustomer(after, customerId, lsn);
                     case "billing_ledger"  -> applyBilling(after, customerId, lsn);
                     case "support_tickets" -> applyTicket(after, customerId, lsn);
@@ -162,6 +167,53 @@ public class IdempotentKafkaConsumer {
         if (dedupKey != null) {
             redis.delete(dedupKey);
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Full hydration when the cached profile is missing or incomplete (FR-1.5)
+    // -------------------------------------------------------------------------
+
+    /**
+     * When Redis has no profile for the customer, or only a stub (no customer row applied yet),
+     * loads the complete profile from the warehouse once (bounded point lookups) and writes it.
+     * The triggering event is then not applied on top: it was committed before we consumed it, so
+     * the warehouse read already contains it or something newer. Its row guard is set to its LSN so
+     * a redelivery or an older event for that row is still dropped. After this, updates stay
+     * incremental with no warehouse reads.
+     *
+     * <p>A warehouse failure propagates, so the event goes through the retry topics (and the DLT if it
+     * keeps failing) instead of leaving a stub. If the warehouse has no row for the customer, returns
+     * {@code null} and the event is applied as before (stub until the customer event arrives).
+     *
+     * @return {@code "hydrated"}, or {@code null} when the profile is complete or the customer is unknown
+     */
+    private String hydrateIfIncomplete(String customerId, String table, String pk, long lsn) throws Exception {
+        String key = profileKeyPrefix + customerId;
+        CustomerProfile existing = loadProfile(key);
+        if (existing != null && !isStub(existing)) {
+            return null;
+        }
+        String stored = redis.opsForValue().get(LSN_GUARD_PREFIX + table + ":" + pk);
+        if (stored != null && lsn <= Long.parseLong(stored)) {
+            return null; // stale: the normal path skips and logs it
+        }
+        var snapshot = warehouse.findProfile(customerId);
+        if (snapshot.isEmpty()) {
+            return null;
+        }
+        CustomerProfile s = snapshot.get();
+        long applied = Math.max(lsn, existing != null ? existing.lastAppliedLsn() : 0L);
+        saveProfile(key, new CustomerProfile(s.customerId(), s.fullName(), s.accountTier(), s.tenureMonths(),
+                s.mrr(), s.waiversUsed12m(), applied, s.recentCharges(), s.activeTickets()));
+        markApplied(table, pk, lsn);
+        log.info("Profile {} for {}: hydrated all three tables from the warehouse (triggered by {}:{})",
+                existing == null ? "missing" : "incomplete", customerId, table, pk);
+        return "hydrated";
+    }
+
+    /** A stub is written when a billing or ticket event arrives before any customer row; it has no name. */
+    public static boolean isStub(CustomerProfile p) {
+        return p.fullName() == null || p.fullName().isBlank();
     }
 
     // -------------------------------------------------------------------------

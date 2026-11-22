@@ -573,6 +573,7 @@ Status as of 2026-11-21. "Verified" means a test or live check asserts the requi
 | FR-1.1 CDC to Kafka | Debezium connector (auto-registered), `compose.yaml` | Smoke: inserted charge reaches Redis in 0.5–2 s (includes 0.5–1 s polling) | Done; the 500 ms WAL→Kafka target is not measured separately |
 | FR-1.2 Dedup + LSN | `IdempotentKafkaConsumer` (payload-derived event id, per-row LSN guard) | `IdempotentKafkaConsumerTest`: duplicate skipped, stale LSN skipped, older event from another table still applied, dedup key released on failure | Done |
 | FR-1.3 Retries + DLT | `KafkaResiliencyConfig` retry topics 1s/2s/4s → `.DLT` | `DeadLetterRoutingTest` (embedded broker): ≥ 6.5 s backoff, exception headers, healthy record behind poison pill still applied; live `demo.ps1 poison` | Done |
+| FR-1.5 Complete profile on out-of-order or post-eviction events | `IdempotentKafkaConsumer.hydrateIfIncomplete`: when Redis has no profile or a stub, one bounded warehouse read (`WarehouseFallbackRepository`) writes the full profile; the triggering event's row guard is set and the event is not re-applied; warehouse errors go to the retry topics. Read side: `CustomerContextTools` treats a stub as a cache miss | `IdempotentKafkaConsumerTest` (ticket before customer, stub replaced, complete profile never reads the warehouse, warehouse failure retried with no stub); `DemoScenariosTest.stubProfileInRedisIsReadFromWarehouseNotTrusted` | Done in tests; not run live (Docker was down). After a rebuild, an older in-flight event for another row can briefly roll that row back until its newer event arrives |
 | FR-1.4 Mutation endpoint | `DemoMutationController` (+ customers, tickets, updates for seeding) | Smoke step 1; `demo.ps1 seed` | Done |
 | FR-2.1 PII masking | `PiiSanitizer` before trace, tools and LLM | `PiiSanitizerTest` | Done (regex; no NER) |
 | FR-2.2 Validation → 400 | Bean Validation + `GlobalExceptionHandler` | `DemoScenariosTest.malformedRequestReturnsStructured400`, `seedEndpointsValidateInput` | Done |
@@ -613,7 +614,7 @@ Status as of 2026-11-21. "Verified" means a test or live check asserts the requi
 | Seeding 8 customers (17 inserts) | ~1 s incl. CDC delivery |
 | Seeded scenarios | 11 questions: 7 resolved, 4 escalated, compliance score 100% |
 | Poison pill → DLT | ~8 s (1 + 2 + 4 s backoff) |
-| Automated tests | 82 (80 pass, 2 live LLM tests skip without a key) |
+| Automated tests | 87 (85 pass, 2 live LLM tests skip without a key) |
 | Live, single-pass, `gemini-3.1-flash-lite`, `reasoning_effort=low` | 1.4 to 2.7 s per turn (one 4.5 s outlier), 1 model call, about 1,400 to 1,600 prompt tokens; all replies accepted after the prompt fix |
 | Live e2e (`demo-smoke-live.ps1`, Flash-Lite), 2026-11-21 | Run 1: 3.3 to 8 s per turn, one HTTP 503 "high demand", 4 of 6 calls hit the 8 s timeout and returned the draft; one call billed about 980 tokens beyond prompt plus reply despite `reasoning_effort=low`. Run 2: 30/30 checks, 1.5 to 2.0 s on the timed turns, 4 of 6 replies written by the model. Decisions identical to offline in both runs |
 | Live, single-pass, `gemini-3.1-pro-preview` | `max_tokens=400`: 4.1 to 4.6 s, all 4 replies cut off by thinking tokens. `max_tokens=1024`: 7.5 s per call, 3 of 4 turns hit the 8 s timeout and returned the draft |
@@ -632,6 +633,7 @@ Status as of 2026-11-21. "Verified" means a test or live check asserts the requi
 8. Prompt caching (FR-3.5 to FR-3.7) savings are unmeasured: Gemini does not report cached tokens and OpenAI was not run. Run the A/B comparison on OpenAI, or read Gemini's native usage metadata (§4.6).
 9. No server-side throttle (bulkhead) around the model call; only client pacing and bounded retries (FR-3.9).
 10. Single-pass uses the keyword tool plan; questions outside its intents get the general account summary. Agentic mode covers them at the cost of latency.
+12. Profile assembly reads the warehouse once per missing or incomplete profile (FR-1.5). Production replacement: a stream join (Kafka Streams or Flink) of the three topics keyed by `customer_id`, so the consume path never reads the warehouse. Verify FR-1.5 live: evict a profile, create a ticket, check `GET /api/demo/profile/{id}` shows the real tier.
 11. Duplicate-ticket matching (FR-6.3, FR-6.4) uses keyword topic rules: two different billing disputes from one customer are treated as one, and a paraphrased problem without a shared error code or topic word is not matched. A semantic match behind the same Java rule is the production step (§6). The waiver path does not run the check, by design.
 
 ---
@@ -697,5 +699,6 @@ The decision model sits only on the routing and grading edges. Eligibility, waiv
 | 2026-11-21 | Measurement | §6: `gemini-decision-1` probed on the 11 demo questions, 3 adversarial messages and RAG chunk grading with `scripts/decision-probe.ps1` (11/11 intents, 0 output tokens, mean 295 ms); comparison with all tested models; §9.4 and vendor-claim notes updated. Application code unchanged. Affects Slides 3, 5, 8 and Q&A |
 | 2026-11-21 | Implementation | FR-6.3/6.4: deterministic `TicketMatchTools` (existing-ticket follow-up in the agent, duplicate-safe ticket creation with warehouse read and row lock); FR-7.5 CDC consume logging; §6 rationale for deterministic duplicate detection; §8 rows, 82 tests, 28 smoke checks, per-scenario scripts; known gap 11. Affects Slides 5, 8 and Q&A |
 | 2026-11-21 | Verification | Two e2e scripts: `demo-smoke.ps1` (deterministic, 1500 ms budget, 29 checks) and `demo-smoke-live.ps1` (Gemini Flash-Lite, 9000 ms budget, 30 checks). Live e2e results added to §8. Affects Slides 8, 9 |
+| 2026-11-21 | Implementation | FR-1.5: hydrate the full profile from the warehouse when the cached one is missing or a stub; stub treated as a miss on read; §8 row and known gap 12 (stream join as the production path). 87 tests. Affects Slide 4 and Q&A |
 
 > **How to use this changelog:** Add a row for every architectural decision — component swaps, new tools added to the agent, latency target adjustments, schema changes. Reference the slide number it affects so the deck stays in sync.

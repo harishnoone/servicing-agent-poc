@@ -6,6 +6,9 @@ Per-requirement status lives in `docs/design.md` §8; spec-level history is in t
 
 ## [Unreleased]
 
+### Fixed
+- **Incomplete profiles after out-of-order or post-eviction CDC events (FR-1.5).** A ticket or billing event that arrived before its customer event, or after the profile was evicted, used to create a stub (blank name, Standard tier, 0 tenure) that the agent read as a normal cache hit, which could wrongly deny a waiver. The consumer now builds the full profile from the warehouse once (bounded lookups) when the profile is missing or a stub, then stays incremental; a warehouse failure retries the event. The agent treats any stub as a cache miss. Tests: 87 (85 pass, 2 live-LLM skip). Not yet verified on the live stack.
+
 ### Added
 - **No duplicate tickets for the same problem (FR-6.3, FR-6.4).** New deterministic `TicketMatchTools`. The agent runs `findMatchingOpenTicket` for problem reports and complaints: when an open ticket already covers the request (ticket id, shared error code or same topic), the reply treats the message as a follow-up on that ticket and the trace shows `EXISTING_TICKET <id> (<reason>)`. Waiver requests and policy questions are excluded. `POST /api/demo/tickets` no longer inserts a duplicate: it returns the existing ticket with `duplicate=true` and `matchReason`, reading the warehouse under a per-customer row lock. Registered as a tool for agentic mode and passed to single-pass synthesis.
 - **CDC consume logging (FR-7.5).** `IdempotentKafkaConsumer` logs one `CDC applied table=... id=... created|updated` INFO line per applied customer, billing or ticket event, with `customerId` in the MDC and ids only.

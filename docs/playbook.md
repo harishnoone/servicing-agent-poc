@@ -56,6 +56,7 @@ Every step below is also a standalone script in `scripts/scenarios/`, so you can
 | 7 | `07-poison-pill-dlt.ps1` | Optional: poison pill |
 | 8 | `08-supervisor-override.ps1` | Optional: supervisor override |
 | 9 | `09-kpis.ps1` | Step 4 |
+| 10 | `10-prompt-caching.ps1` | Optional: prompt caching (live mode only; SKIPPED offline) |
 
 ### Step 1: Live CDC mutation (Elena)
 

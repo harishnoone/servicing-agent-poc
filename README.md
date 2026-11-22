@@ -151,6 +151,7 @@ Or run one scenario at a time, so you can pick what to show (each prints its tra
 | 7 | Poison pill, retries, dead-letter topic |
 | 8 | Supervisor override and append-only audit (changes data) |
 | 9 | KPI report |
+| 10 | Prompt caching (live LLM only; reports SKIPPED offline): one model call per turn, same static prefix across turns and customers |
 
 A step-by-step demo script and troubleshooting table are in [`docs/playbook.md`](docs/playbook.md).
 

@@ -6,6 +6,9 @@ Per-requirement status lives in `docs/design.md` §8; spec-level history is in t
 
 ## [Unreleased]
 
+### Added
+- `scripts/scenarios/10-prompt-caching.ps1`: live-LLM prompt-caching scenario. Checks one model call per turn, usage reported, and the same static-prefix hash across turns and across two customers (no customer data in the cached prefix). Reports SKIPPED in deterministic mode. A turn whose model call hits the 8 s limit is counted as unanswered, not as a failure. Passed live on 2026-11-21: 3 of 3 turns answered, one call each, prefix 3da196aab318 on both customers.
+
 ### Fixed
 - **Incomplete profiles after out-of-order or post-eviction CDC events (FR-1.5).** A ticket or billing event that arrived before its customer event, or after the profile was evicted, used to create a stub (blank name, Standard tier, 0 tenure) that the agent read as a normal cache hit, which could wrongly deny a waiver. The consumer now builds the full profile from the warehouse once (bounded lookups) when the profile is missing or a stub, then stays incremental; a warehouse failure retries the event. The agent treats any stub as a cache miss. Tests: 87 (85 pass, 2 live-LLM skip). Not yet verified on the live stack.
 
@@ -40,6 +43,9 @@ Per-requirement status lives in `docs/design.md` §8; spec-level history is in t
 - The synthesis prompt forbids claiming a bill or ledger change and inventing ticket details (seen in a live reply).
 - Moved `requirements.md`, `design.md`, `infrastructure.md` and `playbook.md` into `docs/`.
 - `.env.example` and the README document Gemini settings; retired model ids (`gemini-1.5-pro`, `gemini-2.x`) are no longer suggested.
+
+### Added
+- `scripts/scenarios/10-prompt-caching.ps1`: live-LLM prompt-caching scenario. Checks one model call per turn, usage reported, and the same static-prefix hash across turns and across two customers (no customer data in the cached prefix). Reports SKIPPED in deterministic mode. A turn whose model call hits the 8 s limit is counted as unanswered, not as a failure. Passed live on 2026-11-21: 3 of 3 turns answered, one call each, prefix 3da196aab318 on both customers.
 
 ### Fixed
 - `docs/requirements.md`: restored Requirements 4 to 8, which an earlier edit had removed.

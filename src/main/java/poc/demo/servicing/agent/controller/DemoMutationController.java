@@ -34,6 +34,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Live warehouse mutations for the panel demo (FR-1.4). Every write goes to Postgres only;
@@ -46,7 +48,7 @@ import java.util.UUID;
 public class DemoMutationController {
 
     private static final String ID = "^[A-Za-z0-9_\\-]{1,32}$";
-    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(DemoMutationController.class);
+    private static final Logger log = LoggerFactory.getLogger(DemoMutationController.class);
 
     public record MutationRequest(
             @NotBlank @Pattern(regexp = ID) String customerId,

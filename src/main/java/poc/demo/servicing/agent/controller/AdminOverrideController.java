@@ -21,6 +21,8 @@ import org.springframework.web.bind.annotation.*;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
+import org.springframework.validation.annotation.Validated;
 
 /**
  * Supervisor-only endpoints (FR-8.1 to FR-8.3). Access requires the
@@ -30,7 +32,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/admin")
 @Tag(name = "Admin")
-@org.springframework.validation.annotation.Validated
+@Validated
 @PreAuthorize("!@adminAccess.jwtEnabled() or hasAuthority('SCOPE_servicing.supervisor')")
 public class AdminOverrideController {
 
@@ -73,7 +75,7 @@ public class AdminOverrideController {
             description = "Returns unreplayed depth per DLT and a preview of pending records with failure headers.")
     public ResponseEntity<Map<String, Object>> inspectDlt(
             @RequestParam(defaultValue = "5") @Min(0) @Max(50) int preview) {
-        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        Map<String, Object> out = new LinkedHashMap<>();
         for (String topic : dltService.dltTopics()) {
             List<DltService.DltMessage> pending = preview > 0 ? dltService.peek(topic, preview) : List.of();
             out.put(topic, Map.of("depth", dltService.depth(topic), "pending", pending));

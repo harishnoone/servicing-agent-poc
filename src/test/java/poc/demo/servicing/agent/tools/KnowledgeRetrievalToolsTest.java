@@ -5,6 +5,8 @@ import poc.demo.servicing.agent.tools.KnowledgeRetrievalTools.SearchResponse;
 import poc.demo.servicing.agent.tools.KnowledgeRetrievalTools.SearchResult;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -45,8 +47,8 @@ class KnowledgeRetrievalToolsTest {
         assertThat(r.results().indexOf(legacy)).isGreaterThan(canonicalRank);
     }
 
-    @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(strings = {
+    @ParameterizedTest
+    @ValueSource(strings = {
             "Our production gateway keeps returning ERR-504-GW. What is the fix?",
             "ERR-504-GW again on the gateway",
             "Production API Gateway throwing ERR-504-GW"})

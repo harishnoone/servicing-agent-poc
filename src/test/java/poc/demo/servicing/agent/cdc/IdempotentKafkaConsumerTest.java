@@ -15,6 +15,10 @@ import org.slf4j.MDC;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
+import java.math.BigDecimal;
+import java.util.Optional;
+import org.mockito.Mockito;
+import org.springframework.dao.QueryTimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -113,14 +117,14 @@ class IdempotentKafkaConsumerTest {
              "status":"OPEN","sla_deadline":"2026-11-30T10:00:00Z"},"source":{"table":"support_tickets","lsn":900},"op":"c"}""";
 
     private static CustomerProfile warehouseElena() {
-        return new CustomerProfile("cust_123", "Elena Vance", "Gold", 36, new java.math.BigDecimal("499.00"), 0, 0L,
-                List.of(new CustomerProfile.LedgerEntry("INV-A", "LATE_FEE", new java.math.BigDecimal("45.00"), "UNPAID", "Late fee")),
+        return new CustomerProfile("cust_123", "Elena Vance", "Gold", 36, new BigDecimal("499.00"), 0, 0L,
+                List.of(new CustomerProfile.LedgerEntry("INV-A", "LATE_FEE", new BigDecimal("45.00"), "UNPAID", "Late fee")),
                 List.of(new CustomerProfile.TicketSummary("TCK-1", "BILLING", "Invoice question", "OPEN", "2026-11-30T10:00:00Z")));
     }
 
     @Test
     void ticketBeforeCustomerHydratesAllThreeTablesFromWarehouse() throws Exception {
-        when(warehouse.findProfile("cust_123")).thenReturn(java.util.Optional.of(warehouseElena()));
+        when(warehouse.findProfile("cust_123")).thenReturn(Optional.of(warehouseElena()));
 
         consumer.handle(TICKET_EVENT, "db.public.support_tickets", 1);
 
@@ -141,7 +145,7 @@ class IdempotentKafkaConsumerTest {
         consumer.handle(billingEvent(800, "INV-A", "UNPAID"), "db.public.billing_ledger", 1); // warehouse empty -> stub
         assertThat(IdempotentKafkaConsumer.isStub(profile())).isTrue();
 
-        when(warehouse.findProfile("cust_123")).thenReturn(java.util.Optional.of(warehouseElena()));
+        when(warehouse.findProfile("cust_123")).thenReturn(Optional.of(warehouseElena()));
         consumer.handle(TICKET_EVENT, "db.public.support_tickets", 1);
         assertThat(IdempotentKafkaConsumer.isStub(profile())).isFalse();
         assertThat(profile().accountTier()).isEqualTo("Gold");
@@ -151,14 +155,14 @@ class IdempotentKafkaConsumerTest {
     void completeProfileNeverReadsWarehouse() {
         consumer.handle(customerEvent(100, 0), "db.public.customers", 1);
         consumer.handle(billingEvent(110, "INV-1", "UNPAID"), "db.public.billing_ledger", 1);
-        verify(warehouse, org.mockito.Mockito.times(1)).findProfile("cust_123"); // only for the first (missing) event
+        verify(warehouse, Mockito.times(1)).findProfile("cust_123"); // only for the first (missing) event
     }
 
     @Test
     void warehouseFailureLeavesEventForRetryWithoutStub() {
-        when(warehouse.findProfile("cust_123")).thenThrow(new org.springframework.dao.QueryTimeoutException("timeout"));
+        when(warehouse.findProfile("cust_123")).thenThrow(new QueryTimeoutException("timeout"));
         assertThatThrownBy(() -> consumer.handle(TICKET_EVENT, "db.public.support_tickets", 1))
-                .isInstanceOf(org.springframework.dao.QueryTimeoutException.class);
+                .isInstanceOf(QueryTimeoutException.class);
         assertThat(redis.store).doesNotContainKey("customer:profile:cust_123")
                 .doesNotContainKey("processed:event:support_tickets:900:TCK-1");
     }

@@ -26,6 +26,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Optional;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
@@ -86,7 +87,7 @@ class DemoScenariosTest {
     }
 
     private JsonNode chat(String customerId, String message) throws Exception {
-        String body = mapper.writeValueAsString(java.util.Map.of("customerId", customerId, "message", message));
+        String body = mapper.writeValueAsString(Map.of("customerId", customerId, "message", message));
         String json = mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();

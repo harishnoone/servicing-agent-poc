@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.math.RoundingMode;
 
 /**
  * Offline stand-in for the LLM planner (NFR-1: demo must run without cloud model access).
@@ -222,7 +223,7 @@ public class DeterministicReplayAgent {
     BigDecimal requestedAmount(CustomerProfile profile, String message) {
         Matcher m = DOLLARS.matcher(message);
         if (m.find()) {
-            return new BigDecimal(m.group(1)).setScale(2, java.math.RoundingMode.HALF_UP);
+            return new BigDecimal(m.group(1)).setScale(2, RoundingMode.HALF_UP);
         }
         return profile.recentCharges().stream()
                 .filter(c -> "LATE_FEE".equalsIgnoreCase(c.chargeType()) && "UNPAID".equalsIgnoreCase(c.status()))

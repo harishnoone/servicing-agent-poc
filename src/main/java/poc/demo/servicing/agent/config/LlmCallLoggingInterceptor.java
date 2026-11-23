@@ -18,6 +18,7 @@ import org.springframework.web.context.request.RequestContextHolder;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Times every HTTP call to the model provider. A turn with tools makes one call per planning step
@@ -84,7 +85,7 @@ public class LlmCallLoggingInterceptor implements ClientHttpRequestInterceptor {
     }
 
     private String errorSummary(byte[] responseBody) {
-        String s = new String(responseBody, java.nio.charset.StandardCharsets.UTF_8).replaceAll("\\s+", " ");
+        String s = new String(responseBody, StandardCharsets.UTF_8).replaceAll("\\s+", " ");
         return s.length() > 300 ? s.substring(0, 300) + "..." : s;
     }
 

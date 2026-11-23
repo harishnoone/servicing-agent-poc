@@ -23,6 +23,8 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Collections;
+import org.mockito.Mockito;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
@@ -60,8 +62,8 @@ class DeadLetterRoutingTest {
         ValueOperations<String, String> ops = mock(ValueOperations.class);
         when(redis.opsForValue()).thenReturn(ops);
         when(ops.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
-        List<String> written = java.util.Collections.synchronizedList(new ArrayList<>());
-        org.mockito.Mockito.doAnswer(i -> { written.add(i.getArgument(0)); return null; })
+        List<String> written = Collections.synchronizedList(new ArrayList<>());
+        Mockito.doAnswer(i -> { written.add(i.getArgument(0)); return null; })
                 .when(ops).set(anyString(), anyString());
 
         long start = System.currentTimeMillis();

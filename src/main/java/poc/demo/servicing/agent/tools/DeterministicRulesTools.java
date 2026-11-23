@@ -16,6 +16,7 @@ import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.math.RoundingMode;
 
 /**
  * Spring AI tool that evaluates late-fee waiver eligibility using pure Java rules.
@@ -49,7 +50,7 @@ public class DeterministicRulesTools {
             TraceCollector traceCollector,
             TurnState turnState,
             AuditService auditService) {
-        this.maxFeeAmount         = maxFeeAmount.setScale(2, java.math.RoundingMode.HALF_UP);
+        this.maxFeeAmount         = maxFeeAmount.setScale(2, RoundingMode.HALF_UP);
         this.minTenureMonths      = minTenureMonths;
         this.eligibleTiers        = Arrays.stream(eligibleTiersStr.split(","))
                 .map(String::trim).collect(Collectors.toSet());
@@ -133,7 +134,7 @@ public class DeterministicRulesTools {
     }
 
     private static BigDecimal money(BigDecimal amount) {
-        return amount.setScale(2, java.math.RoundingMode.HALF_UP);
+        return amount.setScale(2, RoundingMode.HALF_UP);
     }
 
     private WaiverEvaluationResult deny(String reasonCode, String explanation) {

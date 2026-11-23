@@ -10,6 +10,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Per-request facts that tools establish during an agent turn and that the
@@ -31,8 +33,8 @@ public class TurnState {
     private boolean retrievalPerformed;
     private String lastWaiverReasonCode;
 
-    private final java.util.Map<String, CustomerProfile> profiles = new java.util.HashMap<>();
-    private final java.util.Map<String, String> profileSources = new java.util.HashMap<>();
+    private final Map<String, CustomerProfile> profiles = new HashMap<>();
+    private final Map<String, String> profileSources = new HashMap<>();
 
     /** Per-turn profile memo so one turn performs at most one cache-miss fallback per customer. */
     public synchronized CustomerProfile cachedProfile(String customerId) {

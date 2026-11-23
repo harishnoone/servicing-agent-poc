@@ -2,16 +2,16 @@
 # Two modes, same functional checks:
 #   Deterministic (offline planner, default):  powershell -ExecutionPolicy Bypass -File scripts/demo-smoke.ps1
 #   Live LLM: use scripts/demo-smoke-live.ps1, which switches the app to Gemini and calls this script with
-#             -Mode llm (9000 ms per-turn budget, 8 s pacing) and switches back to offline afterwards.
+#             -Mode llm (16000 ms per-turn budget, 8 s pacing) and switches back to offline afterwards.
 param(
     [ValidateSet("deterministic", "llm")] [string] $Mode = "deterministic",
-    # Per-turn latency budget. Default: 1500 ms deterministic (KPI target), 9000 ms llm (8 s synthesis timeout + tools).
+    # Per-turn latency budget. Default: 1500 ms deterministic (KPI target), 16000 ms llm (15 s synthesis timeout + tools).
     [int] $MaxLatencyMs = 0
 )
 $ErrorActionPreference = "Stop"
 $base = "http://localhost:8080"
 $failures = 0
-if ($MaxLatencyMs -le 0) { $MaxLatencyMs = if ($Mode -eq "llm") { 9000 } else { 1500 } }
+if ($MaxLatencyMs -le 0) { $MaxLatencyMs = if ($Mode -eq "llm") { 16000 } else { 1500 } }
 $expectedPlanner = if ($Mode -eq "llm") { "PLANNER: LLM*" } else { "PLANNER: DETERMINISTIC_REPLAY" }
 Write-Host "Mode: $Mode  (per-turn latency budget $MaxLatencyMs ms)" -ForegroundColor Cyan
 

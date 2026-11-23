@@ -125,7 +125,7 @@ Verify everything end to end. There are two scripts with the same functional che
 # Deterministic (offline planner): 29 checks, 1500 ms per-turn budget
 powershell -ExecutionPolicy Bypass -File scripts/demo-smoke.ps1
 
-# Live LLM (Gemini Flash-Lite, single-pass): 30 checks, 9000 ms per-turn budget, 8 s pacing.
+# Live LLM (Gemini Flash-Lite, single-pass): 30 checks, 16000 ms per-turn budget (15 s synthesis timeout, 2048 output tokens), 8 s pacing.
 # Switches the app to live mode for the run, then back to offline. The key is read from this shell only.
 $env:GEMINI_API_KEY = '<AI Studio key>'
 powershell -ExecutionPolicy Bypass -File scripts/demo-smoke-live.ps1      # -KeepLive to stay in live mode

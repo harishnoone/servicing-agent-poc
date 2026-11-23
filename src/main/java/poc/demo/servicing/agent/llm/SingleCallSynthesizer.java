@@ -108,6 +108,10 @@ public class SingleCallSynthesizer {
         }
     }
 
+    private static boolean isInvestigation(String draft) {
+        return draft != null && draft.startsWith("I looked into your bill.");
+    }
+
     /** Dynamic suffix: everything customer- and turn-specific goes here, never in the system prompt. */
     String facts(CustomerProfile p, String sessionId, String message, String draft) {
         StringBuilder sb = new StringBuilder();
@@ -127,6 +131,17 @@ public class SingleCallSynthesizer {
             sb.append("Waiver rule engine result: ").append(turnState.getLastWaiverReasonCode()).append('\n');
         }
         sb.append("Escalated to Tier-2: ").append(turnState.isEscalated()).append('\n');
+        if (turnState.getToolsExecuted().contains("checkWaiverEligibility")) {
+            // FR-3.10: eligibility was checked but nothing was applied. "approved"/"you qualify" would be rejected.
+            sb.append("Late-fee waiver: eligibility checked, NOT applied. Say the fee is \"eligible for a one-time waiver\" "
+                    + "and that the customer can ask to apply it. Never say approved, waived or \"you qualify\".\n");
+        }
+        if (turnState.getToolsExecuted().contains("findMatchingOpenTicket")
+                && isInvestigation(draft)) {
+            sb.append("This was a multi-step investigation (billing, tickets, waiver rules, SLA policy, verification). "
+                    + "Keep every finding from the draft: each charge with its amount and invoice, the total, the ticket, "
+                    + "the waiver eligibility and the SLA credit, with the same citations. Do not add amounts.\n");
+        }
         var existing = turnState.getTicketMatch();
         if (existing != null && existing.matched()) {
             sb.append("Existing open ticket already covers this request: ").append(existing.ticketId()).append(" (")

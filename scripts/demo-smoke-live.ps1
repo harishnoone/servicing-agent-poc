@@ -6,7 +6,7 @@
   1. Recreates servicing-agent-app in live mode. The key is passed to docker compose for this one
      command only; it is never written to .env or any file.
   2. Runs scripts/demo-smoke.ps1 -Mode llm: the same functional checks as the deterministic run, with a
-     9000 ms per-turn budget (8 s synthesis timeout plus tools) and 8 s pacing between chat calls.
+     16000 ms per-turn budget (15 s synthesis timeout plus tools, 2048 output tokens) and 8 s pacing between chat calls.
   3. Recreates the app in offline mode again, unless -KeepLive is given.
 
   Decisions, citations, escalations and the duplicate-ticket check are made in Java, so they must pass
@@ -20,7 +20,7 @@
 #>
 param(
     [string] $Model = "gemini-3.1-flash-lite",
-    [int] $MaxLatencyMs = 9000,
+    [int] $MaxLatencyMs = 16000,
     [int] $PaceSeconds = 8,
     [switch] $KeepLive
 )
@@ -42,6 +42,8 @@ $live = @{
     AGENT_LLM_MODE = "llm"
     AGENT_LLM_ORCHESTRATION = "single-pass"
     AGENT_LLM_REASONING_EFFORT = "low"
+    AGENT_LLM_SYNTHESIS_TIMEOUT_MS = "15000"     # live: room for Gemini thinking tokens under load
+    AGENT_LLM_SYNTHESIS_MAX_TOKENS = "2048"     # live: 1024 was used up by thinking tokens on long answers
 }
 
 function Recreate-App([hashtable]$vars, [string]$expectLog) {

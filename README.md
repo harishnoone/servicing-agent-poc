@@ -172,7 +172,7 @@ One codebase, three ways to run a turn. Java owns every decision, fact and actio
 | Use it for | Demos without a network, CI, the fallback | The live demo: natural replies, same decisions | Showing the model plan tools; open-ended questions outside the Java plan |
 | Trade-off | Templated wording | One model call of latency | Slower, more variable, and the wording can over-promise (one run said "you qualify" for an SLA credit; counted as a compliance violation, not blocked) |
 
-Live runs use a 15 s synthesis timeout and 2,048 output tokens (`AGENT_LLM_SYNTHESIS_TIMEOUT_MS`, `AGENT_LLM_SYNTHESIS_MAX_TOKENS`). The scripts check each mode against its SLA: `demo-smoke.ps1` (deterministic), `demo-smoke-live.ps1` (LLM mode) and `demo-smoke-live.ps1 -Orchestration agentic` (agent planner; only scenario 11 has been verified in this mode).
+Live runs use a 15 s synthesis timeout and 2,048 output tokens (`AGENT_LLM_SYNTHESIS_TIMEOUT_MS`, `AGENT_LLM_SYNTHESIS_MAX_TOKENS`). The scripts check each mode against its SLA: `demo-smoke.ps1` (deterministic), `demo-smoke-live.ps1` (LLM mode) and `demo-smoke-live.ps1 -Orchestration agentic` (agent planner; only scenario 11 has been verified in this mode). Step-by-step start and switch-back commands for each mode: [`docs/playbook.md`](docs/playbook.md) §5.1.
 ## Using a real LLM
 
 The LLM path uses Spring AI's OpenAI client, so any OpenAI-compatible endpoint works. Put the settings in `.env` (git-ignored) and run `docker compose up -d --force-recreate servicing-agent-app`.

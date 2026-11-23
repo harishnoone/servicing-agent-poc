@@ -186,7 +186,7 @@ Invoke-RestMethod -Method Put http://localhost:8083/connectors/warehouse-postgre
 
 ---
 
-## 5. Live LLM mode (Gemini Flash-Lite)
+## 5. Live LLM modes (Gemini Flash-Lite) and starting each mode
 
 The offline planner is the safe default. Use live mode when you want the panel to see a real model write the replies. Decisions, citations and escalations are identical in both modes, because Java runs the tools before the model is called.
 
@@ -218,10 +218,38 @@ Then `docker compose up -d --force-recreate servicing-agent-app` and check the l
 
 **Full live rehearsal:** `$env:GEMINI_API_KEY='<key>'` then `powershell -ExecutionPolicy Bypass -File scripts/demo-smoke-live.ps1`. It recreates the app in live mode with the settings above (key passed to Docker for that command only), runs the same checks as `demo-smoke.ps1` with a 16000 ms per-turn budget (15 s synthesis timeout, 2048 output tokens) and 8 s pacing, prints how many replies the model wrote versus fell back to the draft, then restores offline mode. Add `-KeepLive` to stay live for the demo. On 2026-11-21 it passed 30/30. Per-turn times varied with Google's load: one run had 1.5 to 2.0 s turns with 4 of 6 replies from the model; an earlier run the same day saw 3.3 to 8 s, a 503 "high demand" and 4 of 6 timeouts. Rehearse at the time of day you will present.
 
-`AGENT_LLM_ORCHESTRATION=agentic` lets the model plan and call the tools itself. It is kept for comparison but is slower (2 to 5 model calls per turn), so do not use it in the live demo.
+`AGENT_LLM_ORCHESTRATION=agentic` is agent planner mode (below). It makes 3 to 5 model calls per turn, so present it as a deliberate segment, not as the default live mode.
 
----
-**Which mode to present.** Deterministic mode is the safe default (1.5 s per turn). LLM mode is the live demo: the model connects the dots and writes the answer, with Java checking every word (16 s budget). Agent planner mode shows the model choosing the tools itself (60 s budget): run `demo-smoke-live.ps1 -Orchestration agentic -KeepLive`, then `scripts\scenarios\run.ps1 11`. The trace shows the model's tool calls and `AGENTIC_VERIFIED`. See `design.md` §4.9.
+**Which mode to present.** Deterministic mode is the safe default (1.5 s per turn). LLM mode is the live demo: the model connects the dots and writes the answer, with Java checking every word (16 s budget). Agent planner mode shows the model choosing the tools itself (60 s budget). The trace shows the model's tool calls and `AGENTIC_VERIFIED`. See `design.md` §4.9.
+
+### 5.1 Starting each mode
+
+Run every command from the repo root. The app reads its mode at startup, so each switch recreates the `servicing-agent-app` container (about 10 to 15 s); Postgres, Kafka, Redis and the demo data are untouched. Pass the key in the shell (`$env:GEMINI_API_KEY`), never in a file you commit.
+
+| Mode | Start it | Expect in `docker logs servicing-agent-app` | SLA |
+|---|---|---|---|
+| Deterministic | Open a **new** PowerShell window (no key set), then `docker compose up -d --force-recreate servicing-agent-app` | `Agent planner mode: DETERMINISTIC_REPLAY (offline)` | 1.5 s |
+| LLM mode | `$env:GEMINI_API_KEY='<key>'` then `powershell -ExecutionPolicy Bypass -File scripts\demo-smoke-live.ps1 -KeepLive` | `Agent planner mode: LLM single-pass (Java tool plan + one model call)` | 16 s |
+| Agent planner | `$env:GEMINI_API_KEY='<key>'` then `powershell -ExecutionPolicy Bypass -File scripts\demo-smoke-live.ps1 -Orchestration agentic -KeepLive` | `Agent planner mode: LLM agentic (model calls tools)` | 60 s |
+
+`demo-smoke-live.ps1 -KeepLive` first runs the full live e2e (about 2 to 4 minutes, and it changes demo data), then leaves the app in that mode. To switch without the e2e run, set the variables in the shell and recreate the app yourself:
+```powershell
+$env:OPENAI_API_KEY = '<Gemini key>'
+$env:OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai'
+$env:OPENAI_COMPLETIONS_PATH = '/chat/completions'
+$env:OPENAI_MODEL = 'gemini-3.1-flash-lite'
+$env:AGENT_LLM_MODE = 'llm'
+$env:AGENT_LLM_ORCHESTRATION = 'single-pass'      # or 'agentic' for agent planner mode
+$env:AGENT_LLM_REASONING_EFFORT = 'low'
+$env:AGENT_LLM_SYNTHESIS_TIMEOUT_MS = '15000'
+$env:AGENT_LLM_SYNTHESIS_MAX_TOKENS = '2048'
+docker compose up -d --force-recreate servicing-agent-app
+```
+Check the mode at any time: `docker logs servicing-agent-app 2>&1 | Select-String "Agent planner mode" | Select-Object -Last 1`.
+
+**Back to deterministic** from either LLM mode: close that window (the variables live only in that shell), open a new one and run `docker compose up -d --force-recreate servicing-agent-app`. If a key is in `.env`, add `AGENT_LLM_MODE=replay` there instead.
+
+**Mid-demo fallback:** if the provider is slow or out of quota, switch to deterministic as above. Decisions, citations and escalations are the same in every mode.
 
 ---
 ## 6. Enabling JWT security

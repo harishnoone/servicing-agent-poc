@@ -115,6 +115,7 @@ A turn's response (trimmed):
 | `cust_987` Sam Okafor | `HIGH_FRUSTRATION` escalation |
 | `cust_333` Lena Fischer | ERR-504-GW fix + `SLA_BREACH` escalation |
 | `cust_111` Ava Chen | SLA-credit policy answer |
+| `cust_246` Riley Morgan | Multi-step investigation of "why is my bill so high?": $180 overage + $35 late fee found, late fee eligible but not applied, SLA credit policy for the open P1 outage, every fact verified |
 
 The first three exist after startup; the rest after `seed`. All customer data is fictional. Add your own by appending `POST` and `CHAT` lines to `scripts/seed-data.txt`.
 
@@ -152,6 +153,7 @@ Or run one scenario at a time, so you can pick what to show (each prints its tra
 | 8 | Supervisor override and append-only audit (changes data) |
 | 9 | KPI report |
 | 10 | Prompt caching (live LLM only; reports SKIPPED offline): one model call per turn, same static prefix across turns and customers |
+| 11 | Multi-step billing investigation (Riley): billing, tickets, waiver rules, SLA policy, then fact verification |
 
 A step-by-step demo script and troubleshooting table are in [`docs/playbook.md`](docs/playbook.md).
 
@@ -239,7 +241,7 @@ Policies are Markdown files in `src/main/resources/policies/`; each `##`/`###` s
 ## Development
 
 ```bash
-./mvnw test              # 87 tests; the 2 live-LLM tests run only when OPENAI_API_KEY is set
+./mvnw test              # 90 tests; the 2 live-LLM tests run only when OPENAI_API_KEY is set
 ./mvnw spring-boot:run   # app on the host; start the infra first: docker compose up -d warehouse-db kafka debezium redis
 ```
 

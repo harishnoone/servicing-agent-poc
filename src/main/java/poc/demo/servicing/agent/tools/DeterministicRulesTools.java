@@ -91,6 +91,20 @@ public class DeterministicRulesTools {
         return result;
     }
 
+    /**
+     * Eligibility check without applying the waiver (FR-3.10 billing investigation): same rules as
+     * {@link #evaluateWaiverRules}, but writes no audit event and records no waiver outcome, so the
+     * agent can tell the customer a fee is waivable without approving it.
+     */
+    public WaiverEvaluationResult checkEligibility(String customerId, BigDecimal amount) {
+        long start = System.currentTimeMillis();
+        WaiverEvaluationResult result = evaluate(customerContextTools.loadProfile(customerId), amount);
+        turnState.recordTool("checkWaiverEligibility");
+        traceCollector.record("TOOL_CALL: checkWaiverEligibility -> " + result.reasonCode() + " (not applied)",
+                System.currentTimeMillis() - start);
+        return result;
+    }
+
     /** Approval is emitted as an auditable action event; failure to audit must not break the turn. */
     private void emitApprovalAuditEvent(String customerId, BigDecimal amount, WaiverEvaluationResult result) {
         try {

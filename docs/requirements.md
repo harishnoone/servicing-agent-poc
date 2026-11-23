@@ -81,6 +81,10 @@ Every functional requirement maps directly to one or more of the following spons
 **FR-3.9 (Provider rate-limit resilience):** THE SYSTEM SHALL retry provider HTTP 429 and 503 responses at most 3 times with exponential backoff (1 s, 2 s), and the demo scripts SHALL support pacing between chat calls (`CHAT_PACE_SECONDS`) and one delayed retry of a provider-rejected turn (`CHAT_RETRY_WAIT_SECONDS`), so live demos stay within provider rate limits. Quota exhaustion (no credits, free-tier daily limits) is reported as a failed or fallback turn and is not retried indefinitely.
 
 ---
+**FR-3.10 (Multi-step investigation):** WHEN a customer asks an open billing question that names no fee or error code (e.g. "why is my bill so high?"), THE SYSTEM SHALL investigate in sequence: (1) unpaid non-subscription charges from the ledger, (2) open tickets, including the existing-ticket check (FR-6.3), (3) late-fee waiver eligibility WITHOUT applying a waiver or writing an audit event, (4) the SLA-credit policy when an outage ticket is open, and (5) verify that every amount, invoice, ticket id and citation in the answer comes from a tool result. Each step SHALL appear in `agentReasoningTrace`. IF verification fails, THEN THE SYSTEM SHALL escalate instead of answering. In single-pass LLM mode, a rewrite that contains a dollar amount not present in the verified draft SHALL be rejected (`UNVERIFIED_AMOUNT`).
+
+---
+
 ### Requirement 4: Hybrid Knowledge Retrieval & Conflict Resolution
 
 **FR-4.1:** WHEN searching unstructured knowledge (`searchPoliciesAndCases`), THE SYSTEM SHALL execute a hybrid retrieval query combining dense vector semantic similarity with BM25 lexical keyword matching to ensure exact recall on alphanumeric error codes (e.g., `ERR-504-GW`), SKUs, and policy numbers.
@@ -199,6 +203,7 @@ Non-functional targets (to be confirmed by measurement): added latency per gated
 | 2026-11-20 | Fix | Restored Requirements 4 to 8, accidentally removed by an edit on 2026-11-19, from the v1.3 text (unchanged since) |
 | 2026-11-19 | Update | Compose file name (`compose.yaml`); implementation status of every requirement is tracked in design.md §8 |
 | 2026-11-21 | Scope | Added decision-model screening/triage/grading to Out-of-Scope as a production scale-up item, per design.md §6. Added §6 Future Requirements (FR-F1 to FR-F6, planned only), per design.md §9 |
+| 2026-11-21 | Scope | Added FR-3.10 (multi-step billing investigation with fact verification); implemented, verified per design.md §8 |
 | 2026-11-21 | Scope | Added FR-1.5 (complete profile regardless of CDC event order or eviction); implemented, verified in tests per design.md §8 | (existing-ticket recognition), FR-6.4 (no duplicate tickets for the same problem) and FR-7.5 (CDC consume logging); implemented and verified per design.md §8 |
 
 > **How to use this changelog:** Add a row every time a requirement is added, removed, or its target/threshold changes. Include the reason (e.g., "Panel feedback: tightened deflection target to 40% minimum after Q&A rehearsal").

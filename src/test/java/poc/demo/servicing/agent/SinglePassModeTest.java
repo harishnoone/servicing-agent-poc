@@ -112,6 +112,15 @@ class SinglePassModeTest {
     }
 
     @Test
+    void rewriteWithAmountNotInVerifiedDraftIsRejected() throws Exception {
+        when(synthesizer.rewrite(any(), anyString(), anyString(), anyString()))
+                .thenReturn("Your $45.00 late fee is waived under [billing_waivers_policy.md#sec-4.2], plus a $20 goodwill credit.");
+        JsonNode r = chat("cust_123", "Can you waive my $45 late fee?");
+        assertThat(r.path("finalResponse").asText()).doesNotContain("$20");
+        assertThat(events(r)).anyMatch(e -> e.startsWith("LLM_SYNTHESIS_REJECTED (UNVERIFIED_AMOUNT)"));
+    }
+
+    @Test
     void rewriteWithUnknownCitationIsRejected() throws Exception {
         when(synthesizer.rewrite(any(), anyString(), anyString(), anyString()))
                 .thenReturn("Per [made_up_policy.md#sec-9] you get a full refund.");

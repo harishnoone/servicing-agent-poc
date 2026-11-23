@@ -7,6 +7,7 @@ Per-requirement status lives in `docs/design.md` §8; spec-level history is in t
 ## [Unreleased]
 
 ### Added
+- **Multi-step billing investigation (FR-3.10).** "Why is my bill so high?" now runs five traced steps: ledger analysis, open-ticket check, late-fee eligibility without applying it (`checkWaiverEligibility`, no audit), SLA-credit policy for an open outage, and verification of every amount, invoice, ticket and citation before answering (escalates on failure). Single-pass LLM rewrites that add an unverified dollar amount are rejected (`UNVERIFIED_AMOUNT`). New persona Riley Morgan (`cust_246`) in `seed-data.txt` and scenario `scripts/scenarios/11-billing-investigation.ps1` (self-seeding). Tests: 90 (88 pass, 2 live-LLM skip).
 - `scripts/scenarios/10-prompt-caching.ps1`: live-LLM prompt-caching scenario. Checks one model call per turn, usage reported, and the same static-prefix hash across turns and across two customers (no customer data in the cached prefix). Reports SKIPPED in deterministic mode. A turn whose model call hits the 8 s limit is counted as unanswered, not as a failure. Passed live on 2026-11-21: 3 of 3 turns answered, one call each, prefix 3da196aab318 on both customers.
 
 ### Fixed

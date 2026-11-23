@@ -2,6 +2,7 @@ package poc.demo.servicing.agent.replay;
 
 import poc.demo.servicing.agent.model.CustomerProfile;
 import poc.demo.servicing.agent.model.WaiverEvaluationResult;
+import poc.demo.servicing.agent.telemetry.TraceCollector;
 import poc.demo.servicing.agent.telemetry.TurnState;
 import poc.demo.servicing.agent.tools.CustomerContextTools;
 import poc.demo.servicing.agent.tools.DeterministicRulesTools;
@@ -15,7 +16,9 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.math.RoundingMode;
@@ -38,6 +41,12 @@ public class DeterministicReplayAgent {
             List.of("policy", "credit", "sla", "eligib", "refund", "allowed", "rule", "entitle");
     private static final List<String> BILLING_WORDS =
             List.of("waive", "waiver", "late fee", "late-fee", "fee");
+    private static final List<String> INVESTIGATION_WORDS = List.of(
+            "bill so high", "bill is high", "bill higher", "bill is higher", "bill went up", "bill go up",
+            "bill increase", "higher than usual", "explain my bill", "what is this charge", "what are these charges",
+            "charged more", "why was i charged");
+    private static final Set<String> OUTAGE_CATEGORIES = Set.of("GATEWAY_OUTAGE", "OUTAGE", "INCIDENT");
+    private static final Set<String> CLOSED = Set.of("RESOLVED", "CLOSED");
 
     private final CustomerContextTools customerTools;
     private final KnowledgeRetrievalTools knowledgeTools;
@@ -45,16 +54,19 @@ public class DeterministicReplayAgent {
     private final EscalationTools escalationTools;
     private final TicketMatchTools ticketMatchTools;
     private final TurnState turnState;
+    private final TraceCollector trace;
 
     public DeterministicReplayAgent(CustomerContextTools customerTools, KnowledgeRetrievalTools knowledgeTools,
                                     DeterministicRulesTools rulesTools, EscalationTools escalationTools,
-                                    TicketMatchTools ticketMatchTools, TurnState turnState) {
+                                    TicketMatchTools ticketMatchTools, TurnState turnState,
+                                    TraceCollector trace) {
         this.customerTools = customerTools;
         this.knowledgeTools = knowledgeTools;
         this.rulesTools = rulesTools;
         this.escalationTools = escalationTools;
         this.ticketMatchTools = ticketMatchTools;
         this.turnState = turnState;
+        this.trace = trace;
     }
 
     public String respond(String customerId, String message) {
@@ -66,6 +78,9 @@ public class DeterministicReplayAgent {
 
         if (technical) {
             return technical(profile, message);
+        }
+        if (!billing && INVESTIGATION_WORDS.stream().anyMatch(lower::contains)) {
+            return investigateBill(profile, message);
         }
         if (billing && !policyQuestion) {
             return waiver(profile, message);
@@ -182,6 +197,115 @@ public class DeterministicReplayAgent {
         }
         return out.toString().strip();
     }
+    // -------------------------------------------------------------------------
+
+    /**
+     * FR-3.10 multi-step billing investigation for "why is my bill so high?" questions. Each step is a
+     * tool call or a check recorded in the trace: (1) ledger analysis, (2) open-ticket check, (3) waiver
+     * eligibility for late fees, without applying it, (4) SLA-credit policy when an outage ticket is
+     * open, (5) verification that every amount, invoice, ticket and citation in the answer comes from
+     * the tools. A failed verification escalates instead of answering.
+     */
+    private String investigateBill(CustomerProfile profile, String message) {
+        List<String> steps = new ArrayList<>(List.of("Loaded customer profile"));
+        StringBuilder out = new StringBuilder("I looked into your bill. ");
+
+        // 1. Ledger: what drove the increase (unpaid charges beyond the subscription)
+        List<CustomerProfile.LedgerEntry> drivers = profile.recentCharges().stream()
+                .filter(c -> "UNPAID".equalsIgnoreCase(c.status()) && !"SUBSCRIPTION".equalsIgnoreCase(c.chargeType()))
+                .toList();
+        BigDecimal total = drivers.stream().map(CustomerProfile.LedgerEntry::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        trace.record("INVESTIGATE 1/5 billing: " + drivers.size() + " unpaid charge(s) beyond subscription, total $" + total);
+        steps.add("Ledger: " + drivers.size() + " unpaid non-subscription charge(s), $" + total);
+        if (drivers.isEmpty()) {
+            out.append("There are no unpaid charges beyond your subscription on your account. ");
+        } else {
+            out.append("Beyond your subscription there ").append(drivers.size() == 1 ? "is 1 unpaid charge" : "are "
+                    + drivers.size() + " unpaid charges").append(", $").append(total).append(" in total: ");
+            out.append(String.join("; ", drivers.stream().map(c -> c.chargeType() + " $" + c.amount()
+                    + " (" + c.invoiceId() + ")").toList())).append(". ");
+        }
+
+        // 2. Tickets: is this already being worked on?
+        TicketMatch existing = checkExistingTicket(profile, message, steps);
+        List<CustomerProfile.TicketSummary> open = profile.activeTickets().stream()
+                .filter(t -> !CLOSED.contains(t.status())).toList();
+        trace.record("INVESTIGATE 2/5 tickets: " + open.size() + " open"
+                + (existing.matched() ? ", follow-up on " + existing.ticketId() : ""));
+        out.append(existingTicketSentence(existing));
+
+        // 3. Remedy for late fees: eligibility only, nothing is applied
+        for (CustomerProfile.LedgerEntry fee : drivers) {
+            if (!"LATE_FEE".equalsIgnoreCase(fee.chargeType())) continue;
+            knowledgeTools.searchPoliciesAndCases("late fee waiver policy eligibility");
+            WaiverEvaluationResult eval = rulesTools.checkEligibility(profile.customerId(), fee.amount());
+            steps.add("Late fee " + fee.invoiceId() + " waiver eligibility: " + eval.reasonCode() + " (not applied)");
+            out.append(eval.eligible()
+                    ? "The $" + fee.amount() + " late fee is eligible for a one-time waiver under [" + eval.policyCitation()
+                            + "]. Reply \"waive my late fee\" and I will apply it. "
+                    : "The $" + fee.amount() + " late fee cannot be waived under [" + eval.policyCitation() + "]: "
+                            + eval.explanation() + " ");
+        }
+        trace.record("INVESTIGATE 3/5 remedies: late-fee eligibility checked, nothing applied");
+
+        // 4. Outage on record: point to the SLA-credit policy
+        CustomerProfile.TicketSummary outage = open.stream()
+                .filter(t -> OUTAGE_CATEGORIES.contains(t.category())).findFirst().orElse(null);
+        if (outage != null) {
+            SearchResponse sla = knowledgeTools.searchPoliciesAndCases("SLA credit for a P1 outage longer than 4 hours");
+            SearchResult clause = sla.results().stream().filter(r -> !r.superseded()).findFirst().orElse(null);
+            if (!sla.lowConfidence() && clause != null) {
+                out.append("Your open ticket ").append(outage.ticketId()).append(" (\"").append(outage.subject())
+                        .append("\") may also qualify for an SLA credit under [").append(clause.documentId())
+                        .append("]; credits are confirmed by the account team once the incident is closed. ");
+                steps.add("Outage ticket " + outage.ticketId() + ": SLA credit policy " + clause.documentId());
+            }
+        }
+        trace.record("INVESTIGATE 4/5 policy: " + (outage == null ? "no outage ticket" : "SLA credit checked for " + outage.ticketId()));
+
+        // 5. Verify every fact in the answer against the tool results
+        String answer = out.toString();
+        List<String> failures = verify(answer, profile);
+        trace.record(failures.isEmpty()
+                ? "INVESTIGATE 5/5 VERIFIED: amounts, invoices, tickets and citations match tool results"
+                : "INVESTIGATE 5/5 VERIFICATION_FAILED: " + failures);
+        EscalationTools.EscalationDecision esc = escalationTools.escalateWithSummary(
+                profile.customerId(), message, "BILLING_INVESTIGATION", steps, !failures.isEmpty());
+        if (esc.escalated()) {
+            answer += escalationSentence(esc);
+        }
+        return answer.strip();
+    }
+
+    private static final Pattern MONEY = Pattern.compile("\\$(\\d+(?:\\.\\d{2})?)");
+    private static final Pattern INVOICE = Pattern.compile("\\b(INV-[A-Z0-9-]+)\\b");
+    private static final Pattern TICKET = Pattern.compile("\\b(TKT-[A-Z0-9]+)\\b");
+    private static final Pattern CITE = Pattern.compile("\\[([A-Za-z0-9_.\\-]+#[A-Za-z0-9_.\\-]+)]");
+
+    /** Every amount must be a ledger amount or the driver total; every invoice, ticket and citation must exist. */
+    List<String> verify(String answer, CustomerProfile profile) {
+        List<String> failures = new ArrayList<>();
+        Set<BigDecimal> amounts = new HashSet<>();
+        BigDecimal total = BigDecimal.ZERO;
+        for (CustomerProfile.LedgerEntry c : profile.recentCharges()) {
+            amounts.add(c.amount().stripTrailingZeros());
+            if ("UNPAID".equalsIgnoreCase(c.status()) && !"SUBSCRIPTION".equalsIgnoreCase(c.chargeType())) total = total.add(c.amount());
+        }
+        amounts.add(total.stripTrailingZeros());
+        Matcher m = MONEY.matcher(answer);
+        while (m.find()) if (!amounts.contains(new BigDecimal(m.group(1)).stripTrailingZeros())) failures.add("amount $" + m.group(1));
+        Set<String> invoices = new HashSet<>(profile.recentCharges().stream().map(CustomerProfile.LedgerEntry::invoiceId).toList());
+        m = INVOICE.matcher(answer);
+        while (m.find()) if (!invoices.contains(m.group(1))) failures.add("invoice " + m.group(1));
+        Set<String> tickets = new HashSet<>(profile.activeTickets().stream().map(CustomerProfile.TicketSummary::ticketId).toList());
+        m = TICKET.matcher(answer);
+        while (m.find()) if (!tickets.contains(m.group(1))) failures.add("ticket " + m.group(1));
+        Set<String> retrieved = turnState.getRetrievedDocIds();
+        m = CITE.matcher(answer);
+        while (m.find()) if (!retrieved.contains(m.group(1))) failures.add("citation " + m.group(1));
+        return failures;
+    }
+
     // -------------------------------------------------------------------------
 
     /** FR-6.3: runs the existing-ticket check and records it as a verified step for the handoff card. */

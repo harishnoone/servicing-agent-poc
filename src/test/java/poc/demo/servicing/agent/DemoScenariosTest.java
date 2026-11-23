@@ -270,6 +270,41 @@ class DemoScenariosTest {
         assertThat(r.at("/customerSnapshot/accountTier").asText()).isEqualTo("Gold");
     }
 
+    /** FR-3.10: Riley's "why is my bill so high?" runs the 5-step investigation and verifies every fact. */
+    @Test
+    void scenario5_multiStepBillingInvestigation() throws Exception {
+        put(new CustomerProfile("cust_246", "Riley Morgan", "Enterprise", 30, new BigDecimal("1200.00"), 0, 404L,
+                List.of(new LedgerEntry("INV-R-OVG", "OVERAGE", new BigDecimal("180.00"), "UNPAID", "API overage"),
+                        new LedgerEntry("INV-R-LATE", "LATE_FEE", new BigDecimal("35.00"), "UNPAID", "Late fee"),
+                        new LedgerEntry("INV-R-SUB", "SUBSCRIPTION", new BigDecimal("1200.00"), "PAID", "Monthly")),
+                List.of(new TicketSummary("TKT-R1", "GATEWAY_OUTAGE", "P1 outage on EU gateway for 6 hours", "OPEN",
+                        Instant.now().plus(1, ChronoUnit.DAYS).toString()))));
+
+        JsonNode r = chat("cust_246", "Why is my bill so high this month?");
+
+        assertThat(events(r)).contains("TOOL_CALL: checkWaiverEligibility -> APPROVED (not applied)",
+                        "INVESTIGATE 5/5 VERIFIED: amounts, invoices, tickets and citations match tool results")
+                .anyMatch(e -> e.startsWith("INVESTIGATE 1/5 billing: 2 unpaid charge(s) beyond subscription, total $215.00"))
+                .anyMatch(e -> e.startsWith("INVESTIGATE 2/5 tickets: 1 open"))
+                .anyMatch(e -> e.startsWith("INVESTIGATE 4/5 policy: SLA credit checked for TKT-R1"))
+                .noneMatch(e -> e.startsWith("TOOL_CALL: evaluateWaiverRules"))
+                .doesNotContain("COMPLIANCE_VIOLATION_RECORDED");
+        String text = r.path("finalResponse").asText();
+        assertThat(text).contains("OVERAGE $180.00 (INV-R-OVG)", "LATE_FEE $35.00 (INV-R-LATE)", "$215.00",
+                "eligible for a one-time waiver", "TKT-R1");
+        assertThat(mapper.convertValue(r.path("citations"), List.class))
+                .contains("billing_waivers_policy.md#sec-4.2", "sla_credit_policy.md#sec-4.1");
+        assertThat(r.at("/kpiImpact/deflectionStatus").asText()).isEqualTo("RESOLVED_AUTONOMOUSLY");
+        verify(auditService, never()).append(eq("WAIVER_APPROVED_AUTONOMOUS"), any(), eq("cust_246"), any(), any(), any());
+    }
+
+    @Test
+    void waiverRequestStillUsesWaiverPathNotInvestigation() throws Exception {
+        JsonNode r = chat("cust_123", "Why is my bill $45 higher, and can you waive it?");
+        assertThat(events(r)).contains("TOOL_CALL: evaluateWaiverRules -> APPROVED")
+                .noneMatch(e -> e.startsWith("INVESTIGATE"));
+    }
+
     @Test
     void kpiReportAggregatesTurns() throws Exception {
         when(dltService.totalDepth()).thenReturn(2L);

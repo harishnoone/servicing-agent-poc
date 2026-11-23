@@ -11,6 +11,12 @@
 # Noah Patel: Gold, 18 months, no waivers, $20 late fee -> APPROVED
 POST /api/demo/customers {"customerId":"cust_222","fullName":"Noah Patel","accountTier":"Gold","tenureMonths":18,"mrr":349.00,"waiversUsed12m":0}
 POST /api/demo/mutate {"customerId":"cust_222","chargeType":"LATE_FEE","amount":20.00,"description":"Late payment fee"}
+# Riley Morgan: multi-step billing investigation (FR-3.10)
+POST /api/demo/customers {"customerId":"cust_246","fullName":"Riley Morgan","accountTier":"Enterprise","tenureMonths":30,"mrr":1200.00,"waiversUsed12m":0}
+POST /api/demo/mutate {"customerId":"cust_246","chargeType":"OVERAGE","amount":180.00,"description":"API overage, November"}
+POST /api/demo/mutate {"customerId":"cust_246","chargeType":"LATE_FEE","amount":35.00,"description":"Late payment fee"}
+POST /api/demo/tickets {"customerId":"cust_246","category":"GATEWAY_OUTAGE","subject":"P1 outage on EU gateway for 6 hours","status":"OPEN","slaHoursFromNow":24}
+
 CHAT cust_222 Can you waive my late fee?
 
 # Priya Nair: Gold but only 8 months -> TENURE_TOO_SHORT -> Tier-2 review (policy 4.3)
@@ -54,3 +60,4 @@ CHAT cust_123 Why is my bill $45 higher, and can you waive it?
 CHAT cust_456 My gateway is throwing ERR-504-GW, what should I do?
 CHAT cust_789 Can you waive my late fee?
 CHAT cust_333 Still seeing ERR-504-GW on the EU gateway, any update on our ticket?
+CHAT cust_246 Why is my bill so high this month?

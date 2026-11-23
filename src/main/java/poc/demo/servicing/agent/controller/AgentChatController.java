@@ -23,7 +23,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -50,6 +52,7 @@ public class AgentChatController {
     private static final Pattern APPROVAL_CLAIM = Pattern.compile(
             "\\b(i have approved|i've approved|has been approved|is approved|you qualify|we have approved)\\b",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern MONEY = Pattern.compile("\\$(\\d[\\d,]*(?:\\.\\d{1,2})?)");
     private static final String FALLBACK_RESPONSE =
             "I was not able to complete this request automatically. A human agent will follow up with you.";
 
@@ -220,9 +223,11 @@ public class AgentChatController {
         boolean droppedCitations = !extractCitations(draft).isEmpty() && extractCitations(rewritten).isEmpty();
         boolean badApproval = APPROVAL_CLAIM.matcher(rewritten).find()
                 && !"APPROVED".equals(turnState.getLastWaiverReasonCode());
-        if (badCitation || droppedCitations || badApproval) {
+        boolean badAmount = amounts(rewritten).stream().anyMatch(a -> !amounts(draft).contains(a));
+        if (badCitation || droppedCitations || badApproval || badAmount) {
             trace.record("LLM_SYNTHESIS_REJECTED (" + (badCitation ? "UNKNOWN_CITATION" : droppedCitations
-                    ? "CITATIONS_DROPPED" : "UNBACKED_APPROVAL") + "): deterministic draft returned");
+                    ? "CITATIONS_DROPPED" : badApproval ? "UNBACKED_APPROVAL" : "UNVERIFIED_AMOUNT")
+                    + "): deterministic draft returned");
             log.warn("Single-pass rewrite rejected; returning the deterministic draft. Rejected text: {}",
                     rewritten.length() > 400 ? rewritten.substring(0, 400) + "..." : rewritten);
             return draft;
@@ -240,6 +245,18 @@ public class AgentChatController {
             trace.record("CUSTOMER_SNAPSHOT_UNAVAILABLE");
             return null;
         }
+    }
+
+    /** Dollar amounts in a reply, normalised (45 and 45.00 are equal); the rewrite may not add new ones. */
+    static Set<BigDecimal> amounts(String text) {
+        Set<BigDecimal> found = new HashSet<>();
+        if (text != null) {
+            Matcher m = MONEY.matcher(text);
+            while (m.find()) {
+                found.add(new BigDecimal(m.group(1).replace(",", "")).stripTrailingZeros());
+            }
+        }
+        return found;
     }
 
     static Set<String> extractCitations(String response) {

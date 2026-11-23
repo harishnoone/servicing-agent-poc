@@ -57,6 +57,7 @@ Every step below is also a standalone script in `scripts/scenarios/`, so you can
 | 8 | `08-supervisor-override.ps1` | Optional: supervisor override |
 | 9 | `09-kpis.ps1` | Step 4 |
 | 10 | `10-prompt-caching.ps1` | Optional: prompt caching (live mode only; SKIPPED offline) |
+| 11 | `11-billing-investigation.ps1` | Step 3c: multi-step investigation (self-seeds Riley) |
 
 ### Step 1: Live CDC mutation (Elena)
 
@@ -103,6 +104,10 @@ Script: `.\scripts\scenarios\run.ps1 5`. Marcus already has TKT-8841 open for ER
 3. Contrast: `"What SLA credit do I get for a P1 outage longer than 4 hours?"` is a policy question, so it gets a normal policy answer, not a follow-up.
 
 Point out: the check is deterministic Java (same input, same answer, with a stated reason), the creation check reads the warehouse rather than Redis, and it locks the customer row so two concurrent requests cannot both create a ticket.
+
+### Step 3c: Multi-step investigation (Riley)
+
+Script: `.\scripts\scenarios\run.ps1 11` (creates Riley through CDC if needed). Ask as `cust_246`: `"Why is my bill so high this month?"`. The question names no fee and no error code, so the agent has to investigate. The trace shows five steps: `INVESTIGATE 1/5 billing` (`` overage + `` late fee = ``), `2/5 tickets` (the open P1 outage ticket), `checkWaiverEligibility -> APPROVED (not applied)`, `4/5 policy` (SLA credit under `sla_credit_policy.md#sec-4.1`) and `5/5 VERIFIED`. Point out: the late fee is reported as waivable but not waived (no audit row; the customer has to ask), and the answer is checked against the tools before it is sent. In live mode the LLM rewrite is rejected if it adds an amount that is not in the verified draft (`UNVERIFIED_AMOUNT`).
 
 ### Step 4: KPIs
 

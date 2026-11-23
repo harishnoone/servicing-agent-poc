@@ -22,9 +22,26 @@ Say "Riley asks one open question. The agent has to chain billing, tickets, rule
 $r = Chat "cust_246" "Why is my bill so high this month?"
 
 Say "Investigation steps in the trace:"
-$r.agentReasoningTrace.event | Where-Object { $_ -like "INVESTIGATE*" -or $_ -like "TOOL_CALL*" } | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+$r.agentReasoningTrace.event | Where-Object { $_ -like "INVESTIGATE*" -or $_ -like "TOOL_CALL*" -or $_ -like "AGENTIC_*" -or $_ -like "LLM_ROUND_TRIP*" } | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
 
 Say "Checks"
+if (Trace-Has $r "PLANNER: LLM_AGENTIC") {
+    # The model planned the steps itself; Java still decided every outcome and checked the answer.
+    $tools = @($r.agentReasoningTrace.event | Where-Object { $_ -like "TOOL_CALL*" })
+    $trips = @($r.agentReasoningTrace.event | Where-Object { $_ -like "LLM_ROUND_TRIP*" }).Count
+    Write-Host "  Model-planned: $trips model calls, $($tools.Count) tool calls" -ForegroundColor Cyan
+    Check "model loaded the account (getCustomerState)" (Trace-Has $r "TOOL_CALL: getCustomerState*")
+    Check "model checked the late fee with checkWaiverEligibility, NOT applied" (Trace-Has $r "TOOL_CALL: checkWaiverEligibility -> APPROVED (not applied)")
+    Check "no waiver was approved (no evaluateWaiverRules call)" (-not (Trace-Has $r "TOOL_CALL: evaluateWaiverRules*"))
+    Check "model searched the policies" (Trace-Has $r "TOOL_CALL: searchPoliciesAndCases*")
+    Check "Java verified the model's answer (AGENTIC_VERIFIED)" (Trace-Has $r "AGENTIC_VERIFIED*")
+    Check "answer reports both charges (`$180.00 and `$35.00)" (($r.finalResponse -match '\$180(\.00)?') -and ($r.finalResponse -match '\$35(\.00)?'))
+    Check "cites the waiver policy" ($r.citations -contains "billing_waivers_policy.md#sec-4.2")
+    Write-Host ("  Optional steps the model chose: open-ticket check={0}, SLA policy cited={1}" -f `
+        (Trace-Has $r "TOOL_CALL: findMatchingOpenTicket*"), ($r.citations -contains "sla_credit_policy.md#sec-4.1")) -ForegroundColor DarkGray
+    CheckLatency "turn" $r
+    Finish
+}
 Check "step 1 billing: both charges found, `$215.00 total" (Trace-Has $r "INVESTIGATE 1/5 billing: 2 unpaid charge(s)*total `$215.00")
 Check "step 2 tickets: open outage ticket checked" (Trace-Has $r "INVESTIGATE 2/5 tickets: * open*")
 Check "step 3 rules: late fee eligible, NOT applied" (Trace-Has $r "TOOL_CALL: checkWaiverEligibility -> APPROVED (not applied)")

@@ -157,6 +157,22 @@ Or run one scenario at a time, so you can pick what to show (each prints its tra
 
 A step-by-step demo script and troubleshooting table are in [`docs/playbook.md`](docs/playbook.md).
 
+## Three operating modes
+
+One codebase, three ways to run a turn. Java owns every decision, fact and action in all three; the modes differ in how much the LLM does. Switch with `AGENT_LLM_MODE` and `AGENT_LLM_ORCHESTRATION` (see "Using a real LLM").
+
+| | Deterministic mode | LLM mode | Agent planner mode |
+|---|---|---|---|
+| Setting | no key, or `AGENT_LLM_MODE=replay` | `AGENT_LLM_MODE=llm`, `AGENT_LLM_ORCHESTRATION=single-pass` | `AGENT_LLM_MODE=llm`, `AGENT_LLM_ORCHESTRATION=agentic` |
+| Who picks the tools | Java (deterministic plan) | Java (same plan) | The LLM, from the registered `@Tool`s |
+| What the LLM does | Nothing (templated replies) | Connects the dots and writes the answer from facts Java already verified: one call per turn | Plans the investigation, calls the tools, writes the answer |
+| What Java still checks | Everything | Rejects a rewrite that adds an amount, citation or approval, is cut off or times out, and returns the deterministic draft | Tool outcomes (rules, escalation, tickets); verifies investigation answers (amounts, invoices, tickets, citations) and falls back to the deterministic answer on failure |
+| Latency SLA per turn | **1.5 s** | **16 s** (15 s synthesis cap, then the draft) | **60 s** (3 to 5 sequential model calls, no single cap) |
+| Measured (scenario 11, Riley) | 26 ms | 4.1 to 4.7 s, 4 of 4 model replies accepted | 4.1 to 47 s, 5 model calls; 3 of 3 verified after the citation fix |
+| Use it for | Demos without a network, CI, the fallback | The live demo: natural replies, same decisions | Showing the model plan tools; open-ended questions outside the Java plan |
+| Trade-off | Templated wording | One model call of latency | Slower, more variable, and the wording can over-promise (one run said "you qualify" for an SLA credit; counted as a compliance violation, not blocked) |
+
+Live runs use a 15 s synthesis timeout and 2,048 output tokens (`AGENT_LLM_SYNTHESIS_TIMEOUT_MS`, `AGENT_LLM_SYNTHESIS_MAX_TOKENS`). The scripts check each mode against its SLA: `demo-smoke.ps1` (deterministic), `demo-smoke-live.ps1` (LLM mode) and `demo-smoke-live.ps1 -Orchestration agentic` (agent planner; only scenario 11 has been verified in this mode).
 ## Using a real LLM
 
 The LLM path uses Spring AI's OpenAI client, so any OpenAI-compatible endpoint works. Put the settings in `.env` (git-ignored) and run `docker compose up -d --force-recreate servicing-agent-app`.

@@ -403,6 +403,24 @@ Demo: `scripts/demo.ps1 caching [customerId] [turns]` (and `demo.sh caching`) se
 - **Logging:** `logback-spring.xml` writes console lines with `[sessionId customerId]` from MDC. `AgentChatController` logs `Turn started` and `Turn finished` (status, latency, tools, citations, LLM round trips and model milliseconds). `LlmCallLoggingInterceptor` logs every model call with HTTP status, duration and raw provider usage, and adds `LLM_ROUND_TRIP #n (HTTP 200)` with its latency to the reasoning trace. `IdempotentKafkaConsumer` logs `CDC applied table=... id=... created|updated op=... lsn=... topic=... offset=...` for every applied event with `customerId` in the MDC, ids only (FR-7.5). `DemoMutationController` logs `Duplicate ticket prevented: existing=... reason=...` (FR-6.4).
 
 ---
+### 4.9 Three operating modes and their latency SLAs
+
+One codebase, three ways to run a turn. Java owns every decision, fact and action in all three; the modes differ in how much the LLM does. Switch with `AGENT_LLM_MODE` and `AGENT_LLM_ORCHESTRATION` (see "Using a real LLM").
+
+| | Deterministic mode | LLM mode | Agent planner mode |
+|---|---|---|---|
+| Setting | no key, or `AGENT_LLM_MODE=replay` | `AGENT_LLM_MODE=llm`, `AGENT_LLM_ORCHESTRATION=single-pass` | `AGENT_LLM_MODE=llm`, `AGENT_LLM_ORCHESTRATION=agentic` |
+| Who picks the tools | Java (deterministic plan) | Java (same plan) | The LLM, from the registered `@Tool`s |
+| What the LLM does | Nothing (templated replies) | Connects the dots and writes the answer from facts Java already verified: one call per turn | Plans the investigation, calls the tools, writes the answer |
+| What Java still checks | Everything | Rejects a rewrite that adds an amount, citation or approval, is cut off or times out, and returns the deterministic draft | Tool outcomes (rules, escalation, tickets); verifies investigation answers (amounts, invoices, tickets, citations) and falls back to the deterministic answer on failure |
+| Latency SLA per turn | **1.5 s** | **16 s** (15 s synthesis cap, then the draft) | **60 s** (3 to 5 sequential model calls, no single cap) |
+| Measured (scenario 11, Riley) | 26 ms | 4.1 to 4.7 s, 4 of 4 model replies accepted | 4.1 to 47 s, 5 model calls; 3 of 3 verified after the citation fix |
+| Use it for | Demos without a network, CI, the fallback | The live demo: natural replies, same decisions | Showing the model plan tools; open-ended questions outside the Java plan |
+| Trade-off | Templated wording | One model call of latency | Slower, more variable, and the wording can over-promise (one run said "you qualify" for an SLA credit; counted as a compliance violation, not blocked) |
+
+Live runs use a 15 s synthesis timeout and 2,048 output tokens (`AGENT_LLM_SYNTHESIS_TIMEOUT_MS`, `AGENT_LLM_SYNTHESIS_MAX_TOKENS`). The scripts check each mode against its SLA: `demo-smoke.ps1` (deterministic), `demo-smoke-live.ps1` (LLM mode) and `demo-smoke-live.ps1 -Orchestration agentic` (agent planner; only scenario 11 has been verified in this mode).
+---
+
 ## 5. Docker Compose Container Topology
 
 | Container Name | Image | Port(s) | Role in Live Demo |
@@ -704,5 +722,6 @@ The decision model sits only on the routing and grading edges. Eligibility, waiv
 | 2026-11-21 | Implementation | FR-1.5: hydrate the full profile from the warehouse when the cached one is missing or a stub; stub treated as a miss on read; §8 row and known gap 12 (stream join as the production path). 87 tests. Affects Slide 4 and Q&A |
 | 2026-11-21 | Implementation | FR-3.10 multi-step billing investigation (5 traced steps, eligibility without approval, fact verification, single-pass UNVERIFIED_AMOUNT); §8 row, known gap 13 (memory and evals not built); 90 tests; scenario 11. Affects Slides 5, 8 and Q&A |
 | 2026-11-21 | Implementation | FR-3.10 live: synthesis facts state "eligible, NOT applied" and "keep every finding"; live scripts use 15 s timeout, 2048 output tokens, 16000 ms budget. 4/4 live investigation replies accepted. Affects Slide 8 |
+| 2026-11-21 | Implementation | §4.9 three operating modes with latency SLAs (1.5 s / 16 s / 60 s); agent planner mode for investigations (checkEligibility @Tool, prompt rule 7, AGENTIC_VERIFIED, rule-engine citations grounded); NFR-5. Affects Slides 3, 5, 8 |
 
 > **How to use this changelog:** Add a row for every architectural decision — component swaps, new tools added to the agent, latency target adjustments, schema changes. Reference the slide number it affects so the deck stays in sync.

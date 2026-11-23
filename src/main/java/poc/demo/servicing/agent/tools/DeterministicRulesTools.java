@@ -86,6 +86,7 @@ public class DeterministicRulesTools {
 
         turnState.recordTool("evaluateWaiverRules");
         turnState.recordWaiverOutcome(result.reasonCode());
+        turnState.recordGroundedSource(result.policyCitation());
         traceCollector.record("TOOL_CALL: evaluateWaiverRules -> " + result.reasonCode(),
                 System.currentTimeMillis() - start);
         return result;
@@ -96,10 +97,16 @@ public class DeterministicRulesTools {
      * {@link #evaluateWaiverRules}, but writes no audit event and records no waiver outcome, so the
      * agent can tell the customer a fee is waivable without approving it.
      */
-    public WaiverEvaluationResult checkEligibility(String customerId, BigDecimal amount) {
+    @Tool(description = "Check whether a late fee is eligible for a waiver WITHOUT applying it. Use this when the "
+            + "customer asks why their bill is high or what a charge is, but has not asked for a waiver. Writes no "
+            + "audit event and approves nothing; tell the customer the fee is eligible and that they can ask to apply it.")
+    public WaiverEvaluationResult checkEligibility(
+            @ToolParam(description = "Customer account ID, e.g. cust_246") String customerId,
+            @ToolParam(description = "Late fee amount in dollars, from the customer's ledger") BigDecimal amount) {
         long start = System.currentTimeMillis();
         WaiverEvaluationResult result = evaluate(customerContextTools.loadProfile(customerId), amount);
         turnState.recordTool("checkWaiverEligibility");
+        turnState.recordGroundedSource(result.policyCitation());
         traceCollector.record("TOOL_CALL: checkWaiverEligibility -> " + result.reasonCode() + " (not applied)",
                 System.currentTimeMillis() - start);
         return result;

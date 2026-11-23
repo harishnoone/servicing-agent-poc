@@ -221,6 +221,9 @@ Then `docker compose up -d --force-recreate servicing-agent-app` and check the l
 `AGENT_LLM_ORCHESTRATION=agentic` lets the model plan and call the tools itself. It is kept for comparison but is slower (2 to 5 model calls per turn), so do not use it in the live demo.
 
 ---
+**Which mode to present.** Deterministic mode is the safe default (1.5 s per turn). LLM mode is the live demo: the model connects the dots and writes the answer, with Java checking every word (16 s budget). Agent planner mode shows the model choosing the tools itself (60 s budget): run `demo-smoke-live.ps1 -Orchestration agentic -KeepLive`, then `scripts\scenarios\run.ps1 11`. The trace shows the model's tool calls and `AGENTIC_VERIFIED`. See `design.md` §4.9.
+
+---
 ## 6. Enabling JWT security
 
 Set `OAUTH2_ISSUER_URI` to your IdP's issuer URL in `.env` and restart the app. Tokens then need `customer.chat` for `/api/agent/**` and `servicing.supervisor` for `/api/admin/**`. `/api/demo/**`, Swagger and health stay open. Use Swagger's **Authorize** button with a bearer token.

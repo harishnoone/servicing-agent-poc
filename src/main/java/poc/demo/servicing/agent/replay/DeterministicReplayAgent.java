@@ -283,7 +283,7 @@ public class DeterministicReplayAgent {
     private static final Pattern CITE = Pattern.compile("\\[([A-Za-z0-9_.\\-]+#[A-Za-z0-9_.\\-]+)]");
 
     /** Every amount must be a ledger amount or the driver total; every invoice, ticket and citation must exist. */
-    List<String> verify(String answer, CustomerProfile profile) {
+    public List<String> verify(String answer, CustomerProfile profile) {
         List<String> failures = new ArrayList<>();
         Set<BigDecimal> amounts = new HashSet<>();
         BigDecimal total = BigDecimal.ZERO;

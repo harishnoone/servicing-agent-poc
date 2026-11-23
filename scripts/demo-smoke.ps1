@@ -31,7 +31,7 @@ function Chat([string]$customerId, [string]$message) {
     $events = $r.agentReasoningTrace.event
     $script:Turns++
     if (-not ($events | Where-Object { $_ -like $expectedPlanner })) { $script:WrongPlanner++ }
-    if ($events -contains "LLM_SYNTHESIS_ACCEPTED") { $script:LlmAccepted++ }
+    if ($events -contains "LLM_SYNTHESIS_ACCEPTED" -or $events -contains "LLM_RESPONSE_RECEIVED") { $script:LlmAccepted++ }
     elseif ($events | Where-Object { $_ -like "LLM_SYNTHESIS_*" -or $_ -like "LLM_SYNTHESIS_FALLBACK*" }) { $script:LlmFallback++ }
     $r
 }

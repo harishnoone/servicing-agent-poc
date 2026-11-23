@@ -159,6 +159,8 @@ Every functional requirement maps directly to one or more of the following spons
 
 **NFR-4 (Enterprise Cloud Security & LLMOps Governance):** Production deployment targets private VPC subnets on AWS EKS (or GCP GKE) with AWS PrivateLink to Snowflake, mTLS across Kafka brokers, KMS CMK encryption at rest, EKS IRSA for secretless IAM access, and Zero-Data-Retention (ZDR) Bedrock/Vertex AI endpoints. Prompt and model changes are gated in CI/CD via automated golden-dataset regression evaluations (MLflow Evaluate / Spring AI Evaluators) measuring tool-selection accuracy, guardrail adherence, and citation groundedness.
 
+**NFR-5 (Latency SLA per operating mode):** THE SYSTEM SHALL meet a per-turn latency SLA for each mode: deterministic 1.5 s; LLM mode (single-pass) 16 s, enforced by a 15 s synthesis timeout that returns the deterministic draft; agent planner mode (agentic) 60 s. The sponsor KPI of <1.5 s P95 applies to deterministic mode; streaming the reply is the lever for the LLM modes. Design: `design.md` §4.9.
+
 ---
 
 ## 5. Out-of-Scope (Phase 1 POC Boundaries)

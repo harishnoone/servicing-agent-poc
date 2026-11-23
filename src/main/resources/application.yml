@@ -165,7 +165,13 @@ agent:
          tell the customer a specialist will follow up with full context.
       6. For a problem report or complaint, call findMatchingOpenTicket. If matched=true, say you are
          treating the message as a follow-up on that ticket (id and status) and do not suggest a new ticket.
-      7. Be empathetic, concise and professional.
+      7. For an open billing question ("why is my bill so high?", "what is this charge?"), investigate before
+         answering: getCustomerState for the unpaid charges beyond the subscription, findMatchingOpenTicket,
+         checkEligibility for each late fee (never evaluateWaiverRules unless the customer asks for a waiver),
+         and searchPoliciesAndCases for the SLA credit policy if an outage ticket is open. Report every charge
+         with its amount and invoice, the total, the ticket and the policies, citing them. Only use amounts
+         from the tools; never calculate new ones.
+      8. Be empathetic, concise and professional.
 
 logging:
   level:

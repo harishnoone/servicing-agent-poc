@@ -149,6 +149,7 @@ public class AgentChatController {
                 response = runSinglePass(request.customerId(), sessionId, sanitized);
             } else {
                 response = runLlm(request.customerId(), sessionId, sanitized);
+                response = verifyAgenticAnswer(request.customerId(), sanitized, response);
             }
         } catch (Exception e) {
             log.error("Agent turn failed for customerId={} session={}", request.customerId(), sessionId, e);
@@ -257,6 +258,29 @@ public class AgentChatController {
             }
         }
         return found;
+    }
+
+    /**
+     * FR-3.10 in agentic mode: the model chose the tools and wrote the answer, so Java checks the answer the
+     * same way as the deterministic investigation. Every amount, invoice, ticket id and citation must come
+     * from a tool result; otherwise the deterministic answer is returned instead.
+     */
+    private String verifyAgenticAnswer(String customerId, String message, String response) {
+        if (!turnState.getToolsExecuted().contains("checkWaiverEligibility")) {
+            return response; // not an investigation turn; citation and approval checks still run in enforceGroundedness
+        }
+        CustomerProfile profile = turnState.cachedProfile(customerId);
+        if (profile == null) {
+            profile = customerContextTools.loadProfile(customerId);
+        }
+        List<String> failures = replayAgent.verify(response, profile);
+        if (failures.isEmpty()) {
+            trace.record("AGENTIC_VERIFIED: amounts, invoices, tickets and citations match tool results");
+            return response;
+        }
+        trace.record("AGENTIC_VERIFY_FAILED " + failures + ": deterministic answer returned");
+        log.warn("Agentic answer failed verification {}; returning the deterministic answer", failures);
+        return replayAgent.respond(customerId, message);
     }
 
     static Set<String> extractCitations(String response) {

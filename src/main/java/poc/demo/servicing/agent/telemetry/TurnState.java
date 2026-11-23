@@ -70,6 +70,14 @@ public class TurnState {
 
     public synchronized Set<String> getRetrievedDocIds() { return new LinkedHashSet<>(retrievedDocIds); }
 
+    /**
+     * A policy clause returned by a deterministic tool (e.g. the rules engine's {@code policyCitation}) is a
+     * grounded source the answer may cite, like a retrieval hit. Does not affect retrieval confidence.
+     */
+    public synchronized void recordGroundedSource(String docId) {
+        if (docId != null && !docId.isBlank()) retrievedDocIds.add(docId);
+    }
+
     /** @return lowest confidence across all retrievals this turn, or {@code null} if none ran */
     public synchronized Double getLowestRetrievalConfidence() { return lowestRetrievalConfidence; }
 

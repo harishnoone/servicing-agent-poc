@@ -20,11 +20,14 @@
 #>
 param(
     [string] $Model = "gemini-3.1-flash-lite",
-    [int] $MaxLatencyMs = 16000,
+    # single-pass = LLM mode (Java plans, model words the answer); agentic = agent planner mode (model picks the tools)
+    [ValidateSet("single-pass", "agentic")] [string] $Orchestration = "single-pass",
+    [int] $MaxLatencyMs = 0,       # default: 16000 single-pass, 60000 agentic
     [int] $PaceSeconds = 8,
     [switch] $KeepLive
 )
 $ErrorActionPreference = "Stop"
+if ($MaxLatencyMs -le 0) { $MaxLatencyMs = if ($Orchestration -eq "agentic") { 60000 } else { 16000 } }
 $root = Split-Path $PSScriptRoot -Parent
 $base = "http://localhost:8080"
 
@@ -40,7 +43,7 @@ $live = @{
     OPENAI_COMPLETIONS_PATH = "/chat/completions"
     OPENAI_MODEL = $Model
     AGENT_LLM_MODE = "llm"
-    AGENT_LLM_ORCHESTRATION = "single-pass"
+    AGENT_LLM_ORCHESTRATION = $Orchestration
     AGENT_LLM_REASONING_EFFORT = "low"
     AGENT_LLM_SYNTHESIS_TIMEOUT_MS = "15000"     # live: room for Gemini thinking tokens under load
     AGENT_LLM_SYNTHESIS_MAX_TOKENS = "2048"     # live: 1024 was used up by thinking tokens on long answers
@@ -54,6 +57,7 @@ function Recreate-App([hashtable]$vars, [string]$expectLog) {
         $ErrorActionPreference = "Continue"
         docker compose up -d --force-recreate servicing-agent-app 2>&1 | Out-Null
         $ErrorActionPreference = "Stop"
+if ($MaxLatencyMs -le 0) { $MaxLatencyMs = if ($Orchestration -eq "agentic") { 60000 } else { 16000 } }
     } finally {
         foreach ($k in $vars.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }   # key leaves this process env
         Pop-Location
@@ -70,8 +74,8 @@ function Recreate-App([hashtable]$vars, [string]$expectLog) {
 # Offline: clear every live setting so compose falls back to its defaults (placeholder key -> offline planner).
 $offline = @{}; foreach ($k in $live.Keys) { $offline[$k] = $null }
 
-Write-Host "Switching the app to live mode ($Model, single-pass)..." -ForegroundColor Cyan
-if (-not (Recreate-App $live "LLM single-pass")) {
+Write-Host "Switching the app to live mode ($Model, $Orchestration, per-turn budget $MaxLatencyMs ms)..." -ForegroundColor Cyan
+if (-not (Recreate-App $live $(if ($Orchestration -eq "agentic") { "LLM agentic" } else { "LLM single-pass" }))) {
     Write-Host "App did not start in live mode; restoring offline mode." -ForegroundColor Red
     $null = Recreate-App $offline "DETERMINISTIC_REPLAY"
     exit 1

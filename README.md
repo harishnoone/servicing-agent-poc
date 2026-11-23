@@ -154,6 +154,7 @@ Or run one scenario at a time, so you can pick what to show (each prints its tra
 | 9 | KPI report |
 | 10 | Prompt caching (live LLM only; reports SKIPPED offline): one model call per turn, same static prefix across turns and customers |
 | 11 | Multi-step billing investigation (Riley): billing, tickets, waiver rules, SLA policy, then fact verification |
+| 12 | Ticket status inquiry: Elena's ticket within SLA (answered), Marcus's TKT-8841 past SLA (escalated), and a vague "what is my status?" still escalates |
 
 A step-by-step demo script and troubleshooting table are in [`docs/playbook.md`](docs/playbook.md).
 
@@ -257,7 +258,7 @@ Policies are Markdown files in `src/main/resources/policies/`; each `##`/`###` s
 ## Development
 
 ```bash
-./mvnw test              # 90 tests; the 2 live-LLM tests run only when OPENAI_API_KEY is set
+./mvnw test              # 93 tests; the 2 live-LLM tests run only when OPENAI_API_KEY is set
 ./mvnw spring-boot:run   # app on the host; start the infra first: docker compose up -d warehouse-db kafka debezium redis
 ```
 

@@ -15,6 +15,8 @@ import poc.demo.servicing.agent.tools.TicketMatchTools.TicketMatch;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -76,6 +78,9 @@ public class DeterministicReplayAgent {
         boolean technical = !policyQuestion && TECH_WORDS.stream().anyMatch(lower::contains);
         boolean billing = BILLING_WORDS.stream().anyMatch(lower::contains);
 
+        if (isStatusQuestion(lower, message) && !billing) {
+            return ticketStatus(profile, message);
+        }
         if (technical) {
             return technical(profile, message);
         }
@@ -307,6 +312,88 @@ public class DeterministicReplayAgent {
     }
 
     // -------------------------------------------------------------------------
+
+    private static final List<String> STATUS_WORDS = List.of(
+            "status of my ticket", "ticket status", "status of ticket", "update on my ticket", "update on ticket",
+            "my ticket", "my tickets", "my case", "where are we with", "any update on");
+    private static final Pattern TICKET_ID = Pattern.compile("\\bTKT-[A-Z0-9]+\\b", Pattern.CASE_INSENSITIVE);
+
+    /** "What's the status of my ticket?" questions, or a message naming a ticket id (FR-6.5). */
+    static boolean isStatusQuestion(String lower, String message) {
+        return STATUS_WORDS.stream().anyMatch(lower::contains) || TICKET_ID.matcher(message).find();
+    }
+
+    /**
+     * FR-6.5 ticket status: lists the customer's open tickets (or the one they named) with status, SLA deadline
+     * and time left or breached. The existing SLA-breach escalation runs as usual, so a breached ticket goes to
+     * Tier-2 with the handoff card.
+     */
+    private String ticketStatus(CustomerProfile profile, String message) {
+        List<String> steps = new ArrayList<>(List.of("Loaded customer profile"));
+        List<CustomerProfile.TicketSummary> open = profile.activeTickets().stream()
+                .filter(t -> !CLOSED.contains(t.status())).toList();
+        Matcher named = TICKET_ID.matcher(message);
+        String wanted = named.find() ? named.group().toUpperCase() : null;
+        List<CustomerProfile.TicketSummary> shown = wanted == null ? open
+                : profile.activeTickets().stream().filter(t -> t.ticketId().equalsIgnoreCase(wanted)).toList();
+        trace.record("TICKET_STATUS: " + shown.size() + " ticket(s) " + (wanted == null ? "open" : "matching " + wanted));
+
+        StringBuilder out = new StringBuilder();
+        if (wanted != null && shown.isEmpty()) {
+            out.append("I could not find ticket ").append(wanted).append(" on your account. ");
+            shown = open;
+        }
+        if (shown.isEmpty()) {
+            out.append("You have no open support tickets right now. If something is not working, tell me what you "
+                    + "are seeing and I will help.");
+        } else {
+            out.append(shown.size() == 1 ? "Here is your open ticket: " : "Here are your " + shown.size() + " open tickets: ");
+            Instant now = Instant.now();
+            List<String> lines = new ArrayList<>();
+            for (CustomerProfile.TicketSummary t : shown) {
+                lines.add(t.ticketId() + " \"" + t.subject() + "\" is " + t.status() + ", " + slaText(t.slaDeadline(), now));
+                steps.add("Ticket " + t.ticketId() + " " + t.status() + ", SLA " + t.slaDeadline());
+            }
+            out.append(String.join("; ", lines)).append(". ");
+        }
+        EscalationTools.EscalationDecision esc = escalationTools.escalateWithSummary(
+                profile.customerId(), message, "TICKET_STATUS", steps, false);
+        if (esc.escalated()) {
+            out.append(escalationSentence(esc));
+        }
+        return out.toString().strip();
+    }
+
+    private static String slaText(String deadline, Instant now) {
+        Instant due = EscalationTools.parseInstant(deadline);
+        if (due == null) {
+            return "no SLA deadline on record";
+        }
+        long hours = Duration.between(now, due).toHours();
+        if (due.isBefore(now)) {
+            long late = Math.max(1, -hours);
+            return "SLA breached " + late + (late == 1 ? " hour" : " hours") + " ago";
+        }
+        return hours >= 48 ? "within SLA (" + (hours / 24) + " days left)"
+                : "within SLA (" + Math.max(hours, 0) + (hours == 1 ? " hour" : " hours") + " left)";
+    }
+
+    // -------------------------------------------------------------------------
+
+    /**
+     * Agent planner mode: escalation must not depend on the model remembering to call the tool. If the model
+     * did not run {@code escalateWithSummary}, Java runs it (it re-checks SLA breach, frustration and retrieval
+     * confidence itself) and returns the sentence to append, or {@code null} when no escalation is needed.
+     */
+    public String ensureEscalationChecked(String customerId, String message) {
+        if (turnState.getToolsExecuted().contains("escalateWithSummary")) {
+            return null;
+        }
+        EscalationTools.EscalationDecision esc = escalationTools.escalateWithSummary(
+                customerId, message, "AGENT_PLANNED", List.of("Escalation check enforced by Java after the model's plan"), false);
+        trace.record("AGENTIC_ESCALATION_ENFORCED: " + esc.reason());
+        return esc.escalated() ? escalationSentence(esc) : null;
+    }
 
     /** FR-6.3: runs the existing-ticket check and records it as a verified step for the handoff card. */
     private TicketMatch checkExistingTicket(CustomerProfile profile, String message, List<String> steps) {

@@ -58,6 +58,7 @@ Every step below is also a standalone script in `scripts/scenarios/`, so you can
 | 9 | `09-kpis.ps1` | Step 4 |
 | 10 | `10-prompt-caching.ps1` | Optional: prompt caching (live mode only; SKIPPED offline) |
 | 11 | `11-billing-investigation.ps1` | Step 3c: multi-step investigation (self-seeds Riley) |
+| 12 | `12-ticket-status.ps1` | Step 3d: ticket status inquiry |
 
 ### Step 1: Live CDC mutation (Elena)
 
@@ -108,6 +109,10 @@ Point out: the check is deterministic Java (same input, same answer, with a stat
 ### Step 3c: Multi-step investigation (Riley)
 
 Script: `.\scripts\scenarios\run.ps1 11` (creates Riley through CDC if needed). Ask as `cust_246`: `"Why is my bill so high this month?"`. The question names no fee and no error code, so the agent has to investigate. The trace shows five steps: `INVESTIGATE 1/5 billing` (`` overage + `` late fee = ``), `2/5 tickets` (the open P1 outage ticket), `checkWaiverEligibility -> APPROVED (not applied)`, `4/5 policy` (SLA credit under `sla_credit_policy.md#sec-4.1`) and `5/5 VERIFIED`. Point out: the late fee is reported as waivable but not waived (no audit row; the customer has to ask), and the answer is checked against the tools before it is sent. In live mode the LLM rewrite is rejected if it adds an amount that is not in the verified draft (`UNVERIFIED_AMOUNT`).
+
+### Step 3d: Ticket status inquiry (Elena, Marcus)
+
+Script: `.\scripts\scenarios\run.ps1 12`. Elena asks `"Hi, what's the status of my ticket?"`: the reply lists TKT-7721 with its subject, status and SLA time left, and the turn resolves. Marcus asks `"Any news on TKT-8841?"`: the reply says the SLA was breached 4 hours ago and the turn escalates with the handoff card. Phrasing matters in deterministic mode: "status of my ticket", "my ticket", "any update on" or a ticket id give the ticket-status answer; a vague "Any news?" or "What is my status?" gives the general account summary, which also names the ticket. Every phrasing escalates a breached ticket. In agent planner mode the model handles all phrasings and Java enforces the escalation check if the model skips it (`AGENTIC_ESCALATION_ENFORCED`).
 
 ### Step 4: KPIs
 

@@ -305,6 +305,30 @@ class DemoScenariosTest {
                 .noneMatch(e -> e.startsWith("INVESTIGATE"));
     }
 
+    /** FR-6.5: a customer asks about their ticket; status, SLA and no needless escalation when within SLA. */
+    @Test
+    void scenario6_ticketStatusWithinSlaResolves() throws Exception {
+        JsonNode r = chat("cust_123", "Hi, what's the status of my ticket?");
+        assertThat(events(r)).contains("TICKET_STATUS: 1 ticket(s) open");
+        assertThat(r.path("finalResponse").asText()).contains("TKT-7721", "\"Invoice review\"", "is OPEN", "within SLA");
+        assertThat(r.at("/kpiImpact/deflectionStatus").asText()).isEqualTo("RESOLVED_AUTONOMOUSLY");
+    }
+
+    @Test
+    void ticketStatusByIdPastSlaEscalates() throws Exception {
+        JsonNode r = chat("cust_456", "Any news on TKT-8841?");
+        assertThat(events(r)).contains("TICKET_STATUS: 1 ticket(s) matching TKT-8841");
+        assertThat(r.path("finalResponse").asText()).contains("PENDING_ENGINEERING", "SLA breached 4 hours ago");
+        assertThat(r.at("/kpiImpact/deflectionStatus").asText()).isEqualTo("ESCALATED");
+        assertThat(r.at("/handoffCard/classifiedIntent").asText()).isEqualTo("TICKET_STATUS");
+    }
+
+    @Test
+    void ticketStatusWithNoOpenTicketsSaysSo() throws Exception {
+        JsonNode r = chat("cust_789", "Is there any update on my ticket?");
+        assertThat(r.path("finalResponse").asText()).contains("no open support tickets");
+    }
+
     @Test
     void kpiReportAggregatesTurns() throws Exception {
         when(dltService.totalDepth()).thenReturn(2L);

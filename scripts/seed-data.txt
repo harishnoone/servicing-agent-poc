@@ -61,3 +61,5 @@ CHAT cust_456 My gateway is throwing ERR-504-GW, what should I do?
 CHAT cust_789 Can you waive my late fee?
 CHAT cust_333 Still seeing ERR-504-GW on the EU gateway, any update on our ticket?
 CHAT cust_246 Why is my bill so high this month?
+CHAT cust_123 Hi, what's the status of my ticket?
+CHAT cust_456 Any news on TKT-8841?

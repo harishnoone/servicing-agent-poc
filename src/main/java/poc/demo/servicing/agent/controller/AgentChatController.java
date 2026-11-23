@@ -150,6 +150,10 @@ public class AgentChatController {
             } else {
                 response = runLlm(request.customerId(), sessionId, sanitized);
                 response = verifyAgenticAnswer(request.customerId(), sanitized, response);
+                String escalation = replayAgent.ensureEscalationChecked(request.customerId(), sanitized);
+                if (escalation != null) {
+                    response = response.strip() + " " + escalation;
+                }
             }
         } catch (Exception e) {
             trace.record("AGENT_TURN_FAILED: " + e.getClass().getSimpleName());

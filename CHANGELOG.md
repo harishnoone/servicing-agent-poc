@@ -6,6 +6,12 @@ Per-requirement status lives in `docs/design.md` §8; spec-level history is in t
 
 ## [Unreleased]
 
+### Added
+- **Ticket status inquiry (FR-6.5).** "What's the status of my ticket?", "any update on my ticket" or a ticket id now lists the customer's open tickets (or the named one) with subject, status and SLA time left or hours breached; a breached ticket escalates. Scenario `scripts/scenarios/12-ticket-status.ps1` (Elena within SLA, Marcus past SLA, vague question). Passed offline and in live agent planner mode. Tests: 93.
+
+### Fixed
+- **Agent planner mode could skip escalation.** Live, the model answered Marcus's "What is my status?" without calling `escalateWithSummary`, so a breached ticket was not escalated. Java now runs the escalation check after every agentic turn in which the model did not (`AGENTIC_ESCALATION_ENFORCED` in the trace).
+
 ### Fixed
 - **Agent planner turns could hang on a stalled model call.** The RestClient used for the model had no read timeout, so one slow Gemini response blocked the turn indefinitely (seen when running scenario 11 twice in a row; not related to prompt caching). Model calls now have a 5 s connect and 15 s read timeout (`agent.llm.http-connect-timeout-seconds`, `agent.llm.http-read-timeout-seconds`), and a failed agentic turn returns the deterministic answer (`AGENTIC_FALLBACK`) instead of the generic failure message. Verified back to back on Gemini: one stalled call fell back in 16.5 s; the other two runs were model-planned and verified (15 s, 30 s).
 

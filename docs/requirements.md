@@ -123,6 +123,8 @@ Every functional requirement maps directly to one or more of the following spons
 
 **FR-6.4 (No duplicate tickets):** WHEN a ticket is created for a customer who already has an open ticket for the same problem (shared error code, same category and subject ignoring case and punctuation, or same category family and topic), THE SYSTEM SHALL NOT insert a new ticket and SHALL return the existing ticket id with `duplicate=true` and the match reason. The check SHALL read the warehouse (not the Redis cache, which can lag behind CDC) and SHALL be serialised per customer so concurrent requests cannot both create a ticket.
 
+**FR-6.5 (Ticket status inquiry):** WHEN a customer asks about their ticket ("status of my ticket", "any update on my ticket", or a ticket id), THE SYSTEM SHALL list their open tickets (or the named one) with subject, status and SLA time left or hours breached, and SHALL escalate a breached ticket per FR-6.1. In agent planner mode, IF the model's plan does not run the escalation check, THEN THE SYSTEM SHALL run it after the turn, so escalation never depends on the model.
+
 ---
 
 ### Requirement 7: Backend-Only Observability, Traceability & Executive Reporting
@@ -205,6 +207,7 @@ Non-functional targets (to be confirmed by measurement): added latency per gated
 | 2026-11-20 | Fix | Restored Requirements 4 to 8, accidentally removed by an edit on 2026-11-19, from the v1.3 text (unchanged since) |
 | 2026-11-19 | Update | Compose file name (`compose.yaml`); implementation status of every requirement is tracked in design.md §8 |
 | 2026-11-21 | Scope | Added decision-model screening/triage/grading to Out-of-Scope as a production scale-up item, per design.md §6. Added §6 Future Requirements (FR-F1 to FR-F6, planned only), per design.md §9 |
+| 2026-11-23 | Scope | Added FR-6.5 (ticket status inquiry; escalation check enforced by Java in agent planner mode); implemented, verified per design.md §8 |
 | 2026-11-21 | Scope | Added FR-3.10 (multi-step billing investigation with fact verification); implemented, verified per design.md §8 |
 | 2026-11-21 | Scope | Added FR-1.5 (complete profile regardless of CDC event order or eviction); implemented, verified in tests per design.md §8 | (existing-ticket recognition), FR-6.4 (no duplicate tickets for the same problem) and FR-7.5 (CDC consume logging); implemented and verified per design.md §8 |
 

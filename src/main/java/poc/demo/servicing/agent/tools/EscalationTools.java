@@ -139,7 +139,7 @@ public class EscalationTools {
      * Parses ISO-8601 (Debezium ZonedTimestamp, e.g. {@code 2025-06-01T13:00:00.000000Z}) and
      * Postgres text form ({@code 2025-06-01 13:00:00+00}). Returns {@code null} if absent/unparseable.
      */
-    static Instant parseInstant(String value) {
+    public static Instant parseInstant(String value) {
         if (value == null || value.isBlank()) {
             return null;
         }

@@ -25,6 +25,14 @@ Say "Investigation steps in the trace:"
 $r.agentReasoningTrace.event | Where-Object { $_ -like "INVESTIGATE*" -or $_ -like "TOOL_CALL*" -or $_ -like "AGENTIC_*" -or $_ -like "LLM_ROUND_TRIP*" } | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
 
 Say "Checks"
+if (Trace-Has $r "AGENTIC_FALLBACK*") {
+    # A model call failed or hit the 15 s read timeout; Java returned the deterministic investigation instead.
+    Write-Host "  Provider call failed or timed out: Java returned the deterministic investigation (not model-planned this turn)." -ForegroundColor Yellow
+    Check "fallback answer is the verified deterministic investigation" (Trace-Has $r "INVESTIGATE 5/5 VERIFIED*")
+    Check "no waiver was approved (no evaluateWaiverRules call)" (-not (Trace-Has $r "TOOL_CALL: evaluateWaiverRules*"))
+    CheckLatency "turn" $r
+    Finish
+}
 if (Trace-Has $r "PLANNER: LLM_AGENTIC") {
     # The model planned the steps itself; Java still decided every outcome and checked the answer.
     $tools = @($r.agentReasoningTrace.event | Where-Object { $_ -like "TOOL_CALL*" })

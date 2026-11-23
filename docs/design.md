@@ -413,7 +413,7 @@ One codebase, three ways to run a turn. Java owns every decision, fact and actio
 | Who picks the tools | Java (deterministic plan) | Java (same plan) | The LLM, from the registered `@Tool`s |
 | What the LLM does | Nothing (templated replies) | Connects the dots and writes the answer from facts Java already verified: one call per turn | Plans the investigation, calls the tools, writes the answer |
 | What Java still checks | Everything | Rejects a rewrite that adds an amount, citation or approval, is cut off or times out, and returns the deterministic draft | Tool outcomes (rules, escalation, tickets); verifies investigation answers (amounts, invoices, tickets, citations) and falls back to the deterministic answer on failure |
-| Latency SLA per turn | **1.5 s** | **16 s** (15 s synthesis cap, then the draft) | **60 s** (3 to 5 sequential model calls, no single cap) |
+| Latency SLA per turn | **1.5 s** | **16 s** (15 s synthesis cap, then the draft) | **60 s** (3 to 5 sequential model calls, each capped at 15 s; a timeout returns the deterministic answer) |
 | Measured (scenario 11, Riley) | 26 ms | 4.1 to 4.7 s, 4 of 4 model replies accepted | 4.1 to 47 s, 5 model calls; 3 of 3 verified after the citation fix |
 | Use it for | Demos without a network, CI, the fallback | The live demo: natural replies, same decisions | Showing the model plan tools; open-ended questions outside the Java plan |
 | Trade-off | Templated wording | One model call of latency | Slower, more variable, and the wording can over-promise (one run said "you qualify" for an SLA credit; counted as a compliance violation, not blocked) |
@@ -723,5 +723,6 @@ The decision model sits only on the routing and grading edges. Eligibility, waiv
 | 2026-11-21 | Implementation | FR-3.10 multi-step billing investigation (5 traced steps, eligibility without approval, fact verification, single-pass UNVERIFIED_AMOUNT); §8 row, known gap 13 (memory and evals not built); 90 tests; scenario 11. Affects Slides 5, 8 and Q&A |
 | 2026-11-21 | Implementation | FR-3.10 live: synthesis facts state "eligible, NOT applied" and "keep every finding"; live scripts use 15 s timeout, 2048 output tokens, 16000 ms budget. 4/4 live investigation replies accepted. Affects Slide 8 |
 | 2026-11-21 | Implementation | §4.9 three operating modes with latency SLAs (1.5 s / 16 s / 60 s); agent planner mode for investigations (checkEligibility @Tool, prompt rule 7, AGENTIC_VERIFIED, rule-engine citations grounded); NFR-5. Affects Slides 3, 5, 8 |
+| 2026-11-23 | Fix | Model HTTP client: 5 s connect / 15 s read timeout; agent planner mode falls back to the deterministic answer on a failed model call (AGENTIC_FALLBACK). §4.9 SLA note. Affects Slide 8 |
 
 > **How to use this changelog:** Add a row for every architectural decision — component swaps, new tools added to the agent, latency target adjustments, schema changes. Reference the slide number it affects so the deck stays in sync.

@@ -152,10 +152,17 @@ public class AgentChatController {
                 response = verifyAgenticAnswer(request.customerId(), sanitized, response);
             }
         } catch (Exception e) {
-            log.error("Agent turn failed for customerId={} session={}", request.customerId(), sessionId, e);
             trace.record("AGENT_TURN_FAILED: " + e.getClass().getSimpleName());
-            response = FALLBACK_RESPONSE;
-            failed = true;
+            if (!replayMode && !singlePass) {
+                // Agent planner mode: a model call failed or timed out. Java still has the answer.
+                log.warn("Agentic turn failed ({}); returning the deterministic answer", e.toString());
+                trace.record("AGENTIC_FALLBACK: deterministic answer returned");
+                response = replayAgent.respond(request.customerId(), sanitized);
+            } else {
+                log.error("Agent turn failed for customerId={} session={}", request.customerId(), sessionId, e);
+                response = FALLBACK_RESPONSE;
+                failed = true;
+            }
         }
 
         List<String> citations = new ArrayList<>(extractCitations(response));

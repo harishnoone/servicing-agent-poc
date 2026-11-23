@@ -167,7 +167,7 @@ One codebase, three ways to run a turn. Java owns every decision, fact and actio
 | Who picks the tools | Java (deterministic plan) | Java (same plan) | The LLM, from the registered `@Tool`s |
 | What the LLM does | Nothing (templated replies) | Connects the dots and writes the answer from facts Java already verified: one call per turn | Plans the investigation, calls the tools, writes the answer |
 | What Java still checks | Everything | Rejects a rewrite that adds an amount, citation or approval, is cut off or times out, and returns the deterministic draft | Tool outcomes (rules, escalation, tickets); verifies investigation answers (amounts, invoices, tickets, citations) and falls back to the deterministic answer on failure |
-| Latency SLA per turn | **1.5 s** | **16 s** (15 s synthesis cap, then the draft) | **60 s** (3 to 5 sequential model calls, no single cap) |
+| Latency SLA per turn | **1.5 s** | **16 s** (15 s synthesis cap, then the draft) | **60 s** (3 to 5 sequential model calls, each capped at 15 s; a timeout returns the deterministic answer) |
 | Measured (scenario 11, Riley) | 26 ms | 4.1 to 4.7 s, 4 of 4 model replies accepted | 4.1 to 47 s, 5 model calls; 3 of 3 verified after the citation fix |
 | Use it for | Demos without a network, CI, the fallback | The live demo: natural replies, same decisions | Showing the model plan tools; open-ended questions outside the Java plan |
 | Trade-off | Templated wording | One model call of latency | Slower, more variable, and the wording can over-promise (one run said "you qualify" for an SLA credit; counted as a compliance violation, not blocked) |

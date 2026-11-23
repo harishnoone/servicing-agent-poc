@@ -6,6 +6,9 @@ Per-requirement status lives in `docs/design.md` §8; spec-level history is in t
 
 ## [Unreleased]
 
+### Fixed
+- **Agent planner turns could hang on a stalled model call.** The RestClient used for the model had no read timeout, so one slow Gemini response blocked the turn indefinitely (seen when running scenario 11 twice in a row; not related to prompt caching). Model calls now have a 5 s connect and 15 s read timeout (`agent.llm.http-connect-timeout-seconds`, `agent.llm.http-read-timeout-seconds`), and a failed agentic turn returns the deterministic answer (`AGENTIC_FALLBACK`) instead of the generic failure message. Verified back to back on Gemini: one stalled call fell back in 16.5 s; the other two runs were model-planned and verified (15 s, 30 s).
+
 ### Added
 - **Agent planner mode for investigations (agentic).** The model can now plan the billing investigation itself: `checkEligibility` is a `@Tool` (eligibility without approval), system prompt rule 7 describes the investigation, and Java verifies the model's final answer (`AGENTIC_VERIFIED`, else the deterministic answer is returned). Rule-engine policy citations count as grounded sources. Scenario 11 checks model-planned runs too; 3 of 3 passed on Gemini Flash-Lite (5 model calls, 4.1 to 47 s).
 - **Three operating modes with their own latency SLA (NFR-5):** deterministic 1.5 s, LLM mode 16 s, agent planner 60 s. Documented in README, `design.md` §4.9 and the playbook. `demo-smoke-live.ps1 -Orchestration agentic` runs the live e2e in agent planner mode.

@@ -180,6 +180,24 @@ agent turn / admin override
 Each produced action logs `Action produced: topic=... key=... actionId=... type=... reason=... payload={...}`, and each applied one logs `System of record: APPLIED|DUPLICATE_SKIPPED ...`. The agent's trace shows `ACTION_PUBLISHED: <type> <actionId> -> <topic>`. The admin override returns `status: ACCEPTED` with the `actionId`. Tail them with `docker logs -f servicing-agent-app 2>&1 | Select-String "Action produced|System of record"`.
 
 In production the system of record is a separate service with its own write credentials, and the admin API sits behind a proxy; here it runs in the same container so the POC stays local. Demo seeding endpoints (`/api/demo/*`) still write directly: they are test fixtures, not part of the product surface.
+## Cost and prompt-caching telemetry
+
+Every turn that calls a model logs one line, and the KPI report keeps running totals.
+
+```
+Turn cost: llmCalls=5 promptTokens=12212 completionTokens=357 staticPrefixTokens=5435 (1087 x 5 calls)
+           estCostUsd=0.001364 ifPrefixCachedUsd=0.000956 projectedSaving=30% providerReportedCachedTokens=0
+```
+
+| Field | Meaning |
+|---|---|
+| `llmCalls`, `promptTokens`, `completionTokens` | Summed over every model call in the turn (agent planner mode makes several) |
+| `staticPrefixTokens` | The byte-stable system prompt resent on each call: the part prompt caching can bill at the cached rate |
+| `estCostUsd` | Tokens x `agent.llm.pricing.*` (`AGENT_LLM_PRICE_INPUT`, `_OUTPUT`, `_CACHED_INPUT`, USD per 1M tokens). Defaults are placeholders: set your contract prices |
+| `ifPrefixCachedUsd`, `projectedSaving` | The same turn with the static prefix billed at the cached rate. A ceiling, not a billed figure |
+| `providerReportedCachedTokens` | Cached tokens the provider reports. Always 0 on Gemini's OpenAI-compatible endpoint; OpenAI reports them |
+
+`GET /api/agent/reports/kpis` adds `llmEstimatedCostUsd`, `llmCostIfPrefixCachedUsd` and `projectedCachingSavingPercent` (totals since start). Measured on scenario 11: LLM mode 1 call, 1,982 prompt tokens, est. $0.000265, 31% projected saving; agent planner 5 calls, 12,212 prompt tokens, est. $0.001364, 30 to 36%. The percentage is similar in both modes, but agent planner turns cost about five times more, so the dollars saved per turn are about five times larger. Prompt caching is a cost lever here, not a latency lever: at these prompt sizes most of the time is generation and provider queueing.
 ## Three operating modes
 
 One codebase, three ways to run a turn. Java owns every decision, fact and action in all three; the modes differ in how much the LLM does. Switch with `AGENT_LLM_MODE` and `AGENT_LLM_ORCHESTRATION` (see "Using a real LLM").
@@ -239,7 +257,7 @@ Interactive docs: `http://localhost:8080/swagger-ui.html`.
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/api/agent/chat` | Run one agent turn; returns the `AgentTurnReport` |
-| GET | `/api/agent/reports/kpis` | Sessions, deflection rate, AHT saved, compliance, cache misses, DLT depth, LLM usage |
+| GET | `/api/agent/reports/kpis` | Sessions, deflection rate, AHT saved, compliance, cache misses, DLT depth, LLM usage, estimated LLM cost and projected caching saving |
 | POST | `/api/demo/mutate` | Insert a charge into the warehouse (triggers CDC) |
 | POST | `/api/demo/customers` | Create a customer (409 if it exists) |
 | POST | `/api/demo/customers/{id}` | Update tier, tenure or waiver count |

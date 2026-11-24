@@ -3,6 +3,7 @@ package poc.demo.servicing.agent.telemetry;
 import org.springframework.stereotype.Service;
 
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.DoubleAdder;
 
 /**
  * Thread-safe, in-process KPI aggregation (FR-7.2). Counters reset on restart; production would
@@ -22,6 +23,8 @@ public class KpiMetricsService {
     private final AtomicLong llmCalls                   = new AtomicLong();
     private final AtomicLong promptTokens               = new AtomicLong();
     private final AtomicLong cachedPromptTokens         = new AtomicLong();
+    private final DoubleAdder estimatedCostUsd          = new DoubleAdder();
+    private final DoubleAdder costIfPrefixCachedUsd     = new DoubleAdder();
 
     public void recordDeflection(double ahtSavedMinutes) {
         autonomousDeflections.incrementAndGet();
@@ -41,6 +44,12 @@ public class KpiMetricsService {
         cachedPromptTokens.addAndGet(Math.min(Math.max(cached, 0), prompt));
     }
 
+    /** FR-3.7: one turn's estimated LLM cost and its cost if the static prefix were billed at the cached rate. */
+    public void recordTurnCost(double costUsd, double ifPrefixCachedUsd) {
+        estimatedCostUsd.add(costUsd);
+        costIfPrefixCachedUsd.add(ifPrefixCachedUsd);
+    }
+
     public KpiReport getReport() {
         long sessions    = totalSessions.get();
         long deflections = autonomousDeflections.get();
@@ -57,7 +66,11 @@ public class KpiMetricsService {
                 llmCalls.get(),
                 promptTokens.get(),
                 cachedPromptTokens.get(),
-                promptTokens.get() == 0 ? 0.0 : round(cachedPromptTokens.get() * 100.0 / promptTokens.get()));
+                promptTokens.get() == 0 ? 0.0 : round(cachedPromptTokens.get() * 100.0 / promptTokens.get()),
+                Math.round(estimatedCostUsd.sum() * 1_000_000.0) / 1_000_000.0,
+                Math.round(costIfPrefixCachedUsd.sum() * 1_000_000.0) / 1_000_000.0,
+                estimatedCostUsd.sum() == 0 ? 0.0
+                        : round(100 * (estimatedCostUsd.sum() - costIfPrefixCachedUsd.sum()) / estimatedCostUsd.sum()));
     }
 
     private static double round(double d) {
@@ -85,6 +98,9 @@ public class KpiMetricsService {
             long   llmCalls,
             long   promptTokens,
             long   cachedPromptTokens,
-            double promptCacheHitRatePercent
+            double promptCacheHitRatePercent,
+            double llmEstimatedCostUsd,
+            double llmCostIfPrefixCachedUsd,
+            double projectedCachingSavingPercent
     ) {}
 }

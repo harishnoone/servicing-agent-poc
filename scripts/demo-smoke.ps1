@@ -50,6 +50,10 @@ function WaitFor([scriptblock]$condition, [int]$seconds = 30) {
 # 0. Initial Debezium snapshot hydrates Redis
 Check "Initial snapshot hydrated all 3 personas" (WaitFor { (Profile "cust_123") -and (Profile "cust_456") -and (Profile "cust_789") } 60)
 
+# Approvals are applied for real (FR-9), so start Elena with 0 waivers; the change arrives via CDC.
+Invoke-RestMethod -Method Post "$base/api/demo/customers/cust_123" -ContentType "application/json" -Body (@{ waiversUsed12m = 0 } | ConvertTo-Json) | Out-Null
+$null = WaitFor { (Profile "cust_123").waiversUsed12m -eq 0 } 20
+
 # 1. Live CDC mutation: $45 late fee for Elena
 $before = (Profile "cust_123").lastAppliedLsn
 $m = Invoke-RestMethod -Method Post "$base/api/demo/mutate" -ContentType "application/json" `
@@ -71,6 +75,7 @@ $r = Chat "cust_456" "My gateway is throwing ERR-504-GW, what should I do?"
 Check "Step 3: ESCALATED" ($r.kpiImpact.deflectionStatus -eq "ESCALATED") $r.kpiImpact.deflectionStatus
 Check "Step 3: cites troubleshooting_guide.md#sec-1.1" ($r.citations -contains "troubleshooting_guide.md#sec-1.1")
 Check "Step 3: legacy case marked superseded" ($r.finalResponse -match "superseded")
+Check "Step 3: escalation action published to agent.actions.escalation" ([bool]($r.agentReasoningTrace.event | Where-Object { $_ -like "ACTION_PUBLISHED: escalation *" }))
 Check "Step 3: handoff card has TKT-8841 + SLA_BREACH" (($r.handoffCard.openTickets.ticketId -contains "TKT-8841") -and $r.handoffCard.detectedSentiment -eq "SLA_BREACH")
 $r = Chat "cust_456" "Please waive the `$35 late fee"
 Check "Step 3: second waiver denied (WAIVER_LIMIT_REACHED)" ([bool]($r.agentReasoningTrace.event -contains "TOOL_CALL: evaluateWaiverRules -> WAIVER_LIMIT_REACHED"))
@@ -128,7 +133,7 @@ Write-Host ("KPIs: sessions={0} deflections={1} escalations={2} deflectionRate={
     $k.totalSessions, $k.autonomousDeflections, $k.escalations, $k.deflectionRatePercent, $k.totalAhtMinutesSaved,
     $k.policyComplianceScore, $k.cacheMissFallbacks, $k.dltMessageDepth)
 Check "KPI report populated" ($k.totalSessions -ge 5 -and $k.cacheMissFallbacks -ge 1)
-Check "KPI report exposes prompt-cache fields" ((@("llmCalls","promptTokens","cachedPromptTokens","promptCacheHitRatePercent") | Where-Object { $k.PSObject.Properties.Name -notcontains $_ }).Count -eq 0)
+Check "KPI report exposes prompt-cache and cost fields" ((@("llmCalls","promptTokens","cachedPromptTokens","promptCacheHitRatePercent","llmEstimatedCostUsd","llmCostIfPrefixCachedUsd","projectedCachingSavingPercent") | Where-Object { $k.PSObject.Properties.Name -notcontains $_ }).Count -eq 0)
 
 # Planner: every chat turn ran in the expected mode
 Check "All $($script:Turns) turns ran on the $Mode planner" ($script:WrongPlanner -eq 0) "$($script:WrongPlanner) turn(s) on the other planner"

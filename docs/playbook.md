@@ -97,6 +97,8 @@ Walk through the `AgentTurnReport`:
 
 Follow-up: `"Please waive the $35 late fee"` → `WAIVER_LIMIT_REACHED` (Marcus already used his one waiver).
 
+**Actions to point out (FR-9):** Step 2's approval publishes `agent.actions.waiver` and the system of record really waives the invoice (it arrives back in Redis as `WAIVED`); Step 3's escalation publishes `agent.actions.escalation` and lands in `audit_log` as `ESCALATION_HANDOFF`. Scenarios 2, 3 and 8 check each action end to end; tail `Action produced|System of record` in the logs to show them live. Because approvals change data, scenario 2 and `demo-smoke.ps1` reset Elena's waiver count first.
+
 ### Step 3b: Same problem again, no duplicate ticket (Marcus)
 
 Script: `.\scripts\scenarios\run.ps1 5`. Marcus already has TKT-8841 open for ERR-504-GW.
@@ -116,7 +118,7 @@ Script: `.\scripts\scenarios\run.ps1 12`. Elena asks `"Hi, what's the status of 
 
 ### Step 4: KPIs
 
-**Agent → GET /api/agent/reports/kpis**: sessions, deflection rate, AHT minutes saved, compliance score, cache-miss fallbacks and DLT depth. In live mode also `llmCalls`, `promptTokens`, `cachedPromptTokens` and `promptCacheHitRatePercent` (cached tokens stay 0 on Gemini; see section 5).
+**Agent → GET /api/agent/reports/kpis**: sessions, deflection rate, AHT minutes saved, compliance score, cache-miss fallbacks and DLT depth. In live mode also `llmCalls`, `promptTokens`, `cachedPromptTokens`, `promptCacheHitRatePercent` and the cost fields `llmEstimatedCostUsd`, `llmCostIfPrefixCachedUsd`, `projectedCachingSavingPercent` (README "Cost and prompt-caching telemetry") (cached tokens stay 0 on Gemini; see section 5).
 
 ### Optional segments
 

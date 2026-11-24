@@ -9,6 +9,9 @@ Per-requirement status lives in `docs/design.md` §8; spec-level history is in t
 ### Added
 - **Actions through Kafka; the app no longer writes source data (FR-9).** Approved waivers and escalations are published as action events (`agent.actions.waiver`, `agent.actions.escalation`; `ticket-note` and `sla-credit` reserved) with content-derived ids and an `Action produced: ... payload={...}` log line. A downstream `SystemOfRecordWriter` (consumer group `system-of-record`) applies each action once (`applied_actions`) and writes the audit row; CDC brings the result back. An approved waiver now really waives the invoice and counts against the 12-month limit.
 
+- **Cost on the KPI endpoint.** `GET /api/agent/reports/kpis` adds `llmEstimatedCostUsd`, `llmCostIfPrefixCachedUsd` and `projectedCachingSavingPercent`, the running totals of the `Turn cost:` lines. Live agent planner turn: est. `$0.001364`, 35.87% projected saving. README and `design.md` §4.6a document every field.
+- **Scenarios check the actions.** Scenario 3 and `demo-smoke.ps1` check the escalation action is published and applied (`ESCALATION_HANDOFF`); smoke resets Elena's waiver count first because approvals now change data.
+
 ### Changed
 - **Admin override publishes instead of writing.** `POST /api/admin/overrides/waiver` validates with reads, publishes a waiver action and returns `status: ACCEPTED` with `actionId` (was `APPLIED` with `auditId`). Repeating the same override applies it once. Scenario 2 now resets Elena before each run, since approvals change data; scenario 8 checks the repeated override.
 

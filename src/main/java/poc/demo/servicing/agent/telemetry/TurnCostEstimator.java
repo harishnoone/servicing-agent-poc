@@ -21,15 +21,17 @@ public class TurnCostEstimator {
     private static final Logger log = LoggerFactory.getLogger(TurnCostEstimator.class);
 
     private final StaticPromptPrefix prefix;
+    private final KpiMetricsService kpi;
     private final double inputPerMillion;
     private final double outputPerMillion;
     private final double cachedInputPerMillion;
 
-    public TurnCostEstimator(StaticPromptPrefix prefix,
+    public TurnCostEstimator(StaticPromptPrefix prefix, KpiMetricsService kpi,
                              @Value("${agent.llm.pricing.input-per-million-usd:0.10}") double inputPerMillion,
                              @Value("${agent.llm.pricing.output-per-million-usd:0.40}") double outputPerMillion,
                              @Value("${agent.llm.pricing.cached-input-per-million-usd:0.025}") double cachedInputPerMillion) {
         this.prefix = prefix;
+        this.kpi = kpi;
         this.inputPerMillion = inputPerMillion;
         this.outputPerMillion = outputPerMillion;
         this.cachedInputPerMillion = cachedInputPerMillion;
@@ -48,6 +50,7 @@ public class TurnCostEstimator {
         double cachedCost = ((prompt - cacheable) * inputPerMillion + cacheable * cachedInputPerMillion
                 + completion * outputPerMillion) / 1_000_000;
         double savingPct = cost == 0 ? 0 : 100 * (cost - cachedCost) / cost;
+        kpi.recordTurnCost(cost, cachedCost);
         log.info(String.format("Turn cost: llmCalls=%d promptTokens=%d completionTokens=%d "
                         + "staticPrefixTokens=%d (%d x %d calls) estCostUsd=%.6f ifPrefixCachedUsd=%.6f "
                         + "projectedSaving=%.0f%% providerReportedCachedTokens=%d",

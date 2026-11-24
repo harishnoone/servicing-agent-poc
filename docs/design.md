@@ -326,6 +326,24 @@ Returned by `POST /api/agent/chat` so the panel can inspect every internal step 
 | `PLANNER: LLM_SINGLE_PASS` | Java tool plan + one synthesis call | 1 |
 | `PLANNER: LLM_AGENTIC` | Model plans and calls `@Tool` methods (FR-3.1) | 2 to 5 measured |
 
+### 4.6a Cost and prompt-caching telemetry (FR-3.7)
+
+Every turn that calls a model logs one line, and the KPI report keeps running totals.
+
+```
+Turn cost: llmCalls=5 promptTokens=12212 completionTokens=357 staticPrefixTokens=5435 (1087 x 5 calls)
+           estCostUsd=0.001364 ifPrefixCachedUsd=0.000956 projectedSaving=30% providerReportedCachedTokens=0
+```
+
+| Field | Meaning |
+|---|---|
+| `llmCalls`, `promptTokens`, `completionTokens` | Summed over every model call in the turn (agent planner mode makes several) |
+| `staticPrefixTokens` | The byte-stable system prompt resent on each call: the part prompt caching can bill at the cached rate |
+| `estCostUsd` | Tokens x `agent.llm.pricing.*` (`AGENT_LLM_PRICE_INPUT`, `_OUTPUT`, `_CACHED_INPUT`, USD per 1M tokens). Defaults are placeholders: set your contract prices |
+| `ifPrefixCachedUsd`, `projectedSaving` | The same turn with the static prefix billed at the cached rate. A ceiling, not a billed figure |
+| `providerReportedCachedTokens` | Cached tokens the provider reports. Always 0 on Gemini's OpenAI-compatible endpoint; OpenAI reports them |
+
+`GET /api/agent/reports/kpis` adds `llmEstimatedCostUsd`, `llmCostIfPrefixCachedUsd` and `projectedCachingSavingPercent` (totals since start). Measured on scenario 11: LLM mode 1 call, 1,982 prompt tokens, est. $0.000265, 31% projected saving; agent planner 5 calls, 12,212 prompt tokens, est. $0.001364, 30 to 36%. The percentage is similar in both modes, but agent planner turns cost about five times more, so the dollars saved per turn are about five times larger. Prompt caching is a cost lever here, not a latency lever: at these prompt sizes most of the time is generation and provider queueing.
 ### 4.6 Prompt Caching: Static Prefix / Dynamic Suffix (FR-3.5 to FR-3.7) — IMPLEMENTED; SAVINGS NOT MEASURABLE ON GEMINI
 
 Providers reuse cached input only on an exact prefix match, so each request is split into a stable part and a per-turn part:
@@ -622,7 +640,7 @@ Status as of 2026-11-21. "Verified" means a test or live check asserts the requi
 | FR-3.3 Virtual threads | `spring.threads.virtual.enabled=true` | Configuration only | **Partial**: request/listener threads are virtual; tools within a turn run sequentially (Spring AI executes tool calls in order); no load test |
 | FR-3.4 Cache-miss fallback | `CustomerContextTools` + `WarehouseFallbackRepository` | `CustomerContextToolsTest` (single fallback per turn, async re-hydration, never overwrites CDC); `DemoScenariosTest.cacheMissUsesWarehouseFallback`; smoke (9 ms turn on miss) | Done |
 | FR-3.5 to FR-3.7 Prompt caching | `StaticPromptPrefix`, `CacheUsageRecorder`, `KpiMetricsService.recordLlmUsage`, `agent.prompt-caching.*` (§4.6) | `StaticPromptPrefixTest`, `CacheUsageRecorderTest`; live: same prefix hash on every turn, `demo.ps1 caching` | **Done in code; savings unmeasured.** Gemini's OpenAI-compatible endpoint reports no cached tokens; OpenAI not run |
-| FR-3.7 Cost telemetry | `TurnCostEstimator` logs `Turn cost:` per turn (tokens summed by `LlmCallLoggingInterceptor` into `TurnState`; prices from `agent.llm.pricing.*`) | Live 2026-11-24: LLM mode 1,982 prompt tokens, est. $0.000265, 31% projected saving; agent planner 5 calls, 12,212 tokens, est. $0.001364, 30% | Done. Estimate: placeholder prices; saving is a ceiling (no cached-token reporting on Gemini); `staticPrefixTokens` uses the agentic prefix size, slightly overstating single-pass |
+| FR-3.7 Cost telemetry | `TurnCostEstimator` logs `Turn cost:` per turn and feeds `KpiMetricsService.recordTurnCost` (KPI fields `llmEstimatedCostUsd`, `llmCostIfPrefixCachedUsd`, `projectedCachingSavingPercent`) (tokens summed by `LlmCallLoggingInterceptor` into `TurnState`; prices from `agent.llm.pricing.*`) | Live 2026-11-24: LLM mode 1,982 prompt tokens, est. $0.000265, 31% projected saving; agent planner 5 calls, 12,212 tokens, est. $0.001364, 30% | Done. Estimate: placeholder prices; saving is a ceiling (no cached-token reporting on Gemini); `staticPrefixTokens` uses the agentic prefix size, slightly overstating single-pass |
 | FR-3.8 Single model call per turn | `SingleCallSynthesizer`, `synthesisChatClient`, `AgentChatController.runSinglePass` | `SinglePassModeTest` (one call, draft fallback on failure, rejects unknown citation and unbacked approval); live in containers: 1 `LLM_ROUND_TRIP` per turn, 1.4 to 2.7 s on Flash-Lite | Done |
 | FR-3.10 Multi-step investigation | `DeterministicReplayAgent.investigateBill` (5 traced steps), `DeterministicRulesTools.checkEligibility` (no audit, no approval), `verify()`; single-pass `UNVERIFIED_AMOUNT` check in `AgentChatController` | `DemoScenariosTest.scenario5_multiStepBillingInvestigation` (step order, citations, no audit), `waiverRequestStillUsesWaiverPathNotInvestigation`; `SinglePassModeTest.rewriteWithAmountNotInVerifiedDraftIsRejected`; live: scenario 11 offline and on Gemini Flash-Lite (2026-11-21: 4 of 4 model replies accepted after the prompt fix, 4.1 to 4.7 s, every finding and both citations kept) | Done. Keyword-routed like the rest of the plan; the investigation covers billing questions only |
 | FR-3.9 Rate-limit resilience | `spring.ai.retry.*`; `CHAT_PACE_SECONDS` / `CHAT_RETRY_WAIT_SECONDS` in the scripts | Live paced runs without 429; scripts syntax-checked; offline paced run of 11 scenarios | Done for the demo; no server-side bulkhead |
@@ -642,7 +660,7 @@ Status as of 2026-11-21. "Verified" means a test or live check asserts the requi
 | FR-7.3 Swagger UI | springdoc, bearer scheme | Live: `/swagger-ui.html` 200 | Done |
 | FR-8.1 OAuth2 RBAC | `SecurityConfig`, `@PreAuthorize` | `SecurityJwtModeTest`: 401 without token, 403 wrong scope, 200 supervisor | Done (open in no-IdP demo mode) |
 | FR-8.2 Override + audit | `AdminOverrideService`, `AuditService`, append-only trigger | JWT `sub` recorded (`SecurityJwtModeTest`); smoke: audit row, DELETE rejected, WAIVED reaches Redis | Done |
-| FR-9 Actions via Kafka | `ActionPublisher` (`agent.actions.*`, content-derived ids, `Action produced` log), `SystemOfRecordWriter` (`applied_actions` idempotency, audit), waiver approval in `DeterministicRulesTools`, escalation in `EscalationTools`, `AdminOverrideService` publishes only | `DemoScenariosTest` verifies the waiver action (and none for denials and investigations); `SecurityJwtModeTest` `ACCEPTED`; live 2026-11-24: smoke, scenario 2 twice, scenario 8 with a repeated override (one audit row), all 12 scenarios; escalations applied as `ESCALATION_HANDOFF` | Done. Writer runs in the app container; ticket-note and sla-credit topics have a consumer but no producer yet |
+| FR-9 Actions via Kafka | `ActionPublisher` (`agent.actions.*`, content-derived ids, `Action produced` log), `SystemOfRecordWriter` (`applied_actions` idempotency, audit), waiver approval in `DeterministicRulesTools`, escalation in `EscalationTools`, `AdminOverrideService` publishes only | `DemoScenariosTest` verifies the waiver action (and none for denials and investigations); `SecurityJwtModeTest` `ACCEPTED`; live 2026-11-24: smoke (checks the escalation action), scenario 2 twice, scenario 3 (escalation action applied as `ESCALATION_HANDOFF`), scenario 8 with a repeated override (one audit row), all 12 scenarios | Done. Writer runs in the app container; ticket-note and sla-credit topics have a consumer but no producer yet |
 | FR-8.3 DLT replay | `DltService`, `/api/admin/kafka/dlt[/replay]` | `DeadLetterRoutingTest` (depth 1 → replay → 0); live | Done |
 | NFR-1 Offline | Offline planner, local embeddings, no key needed | All scenarios run offline | Done; Ollama not wired (an OpenAI-compatible Ollama URL may work, untested) |
 | NFR-2 Footprint / start | 512 MB app heap | Stack healthy about 1 min after a cached build | Not formally measured |
@@ -751,5 +769,6 @@ The decision model sits only on the routing and grading edges. Eligibility, waiv
 | 2026-11-23 | Fix | Model HTTP client: 5 s connect / 15 s read timeout; agent planner mode falls back to the deterministic answer on a failed model call (AGENTIC_FALLBACK). §4.9 SLA note. Affects Slide 8 |
 | 2026-11-23 | Implementation | FR-6.5 ticket status inquiry; agent planner mode now enforces the escalation check when the model skips it (found live: "What is my status?" left a breached ticket unescalated). §8 row, 93 tests, scenario 12. Affects Slides 5, 8 |
 | 2026-11-24 | Implementation | §4.10 actions through Kafka (FR-9): ActionPublisher, SystemOfRecordWriter, admin override publishes only, app read-only on source data. Affects Slides 4, 5, 7 |
+| 2026-11-24 | Implementation | §4.6a cost telemetry: Turn cost log fields and KPI totals (llmEstimatedCostUsd, llmCostIfPrefixCachedUsd, projectedCachingSavingPercent); scenario 3 and smoke check the escalation action. Affects Slides 3, 5 |
 
 > **How to use this changelog:** Add a row for every architectural decision — component swaps, new tools added to the agent, latency target adjustments, schema changes. Reference the slide number it affects so the deck stays in sync.

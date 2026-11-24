@@ -123,5 +123,19 @@ public class TurnState {
         return ++llmRoundTrips;
     }
     public synchronized int getLlmRoundTrips() { return llmRoundTrips; }
+
+    private long promptTokens;
+    private long completionTokens;
+    private long cachedTokens;
+
+    /** Token usage of one model call, summed over the turn (agent planner mode makes several calls). */
+    public synchronized void recordTokens(long prompt, long completion, long cached) {
+        promptTokens += prompt;
+        completionTokens += completion;
+        cachedTokens += cached;
+    }
+    public synchronized long getPromptTokens() { return promptTokens; }
+    public synchronized long getCompletionTokens() { return completionTokens; }
+    public synchronized long getCachedTokens() { return cachedTokens; }
     public synchronized long getLlmMillis() { return llmMillis; }
 }

@@ -7,6 +7,7 @@ Per-requirement status lives in `docs/design.md` §8; spec-level history is in t
 ## [Unreleased]
 
 ### Added
+- **Per-turn cost log (FR-3.7).** Every turn with a model call logs `Turn cost: llmCalls=... promptTokens=... completionTokens=... staticPrefixTokens=... estCostUsd=... ifPrefixCachedUsd=... projectedSaving=...% providerReportedCachedTokens=...`. Tokens are summed over all model calls in the turn. Prices come from `agent.llm.pricing.*` (`AGENT_LLM_PRICE_INPUT`, `_OUTPUT`, `_CACHED_INPUT`; defaults are placeholders, set your contract prices). The saving is a ceiling: Gemini's OpenAI-compatible endpoint reports no cached tokens. Measured on scenario 11: LLM mode 1 call, 1,982 prompt tokens, est. $0.000265, 31% projected saving; agent planner 5 calls, 12,212 prompt tokens, est. $0.001364, 30%.
 - **Ticket status inquiry (FR-6.5).** "What's the status of my ticket?", "any update on my ticket" or a ticket id now lists the customer's open tickets (or the named one) with subject, status and SLA time left or hours breached; a breached ticket escalates. Scenario `scripts/scenarios/12-ticket-status.ps1` (Elena within SLA, Marcus past SLA, vague question). Passed offline and in live agent planner mode. Tests: 93.
 
 ### Fixed

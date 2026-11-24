@@ -9,6 +9,7 @@ import poc.demo.servicing.agent.prompt.CacheUsageRecorder;
 import poc.demo.servicing.agent.replay.DeterministicReplayAgent;
 import poc.demo.servicing.agent.telemetry.KpiMetricsService;
 import poc.demo.servicing.agent.telemetry.TraceCollector;
+import poc.demo.servicing.agent.telemetry.TurnCostEstimator;
 import poc.demo.servicing.agent.telemetry.TurnState;
 import poc.demo.servicing.agent.tools.CustomerContextTools;
 import io.swagger.v3.oas.annotations.Operation;
@@ -66,6 +67,7 @@ public class AgentChatController {
     private final TurnState turnState;
     private final CacheUsageRecorder cacheUsage;
     private final SingleCallSynthesizer synthesizer;
+    private final TurnCostEstimator costEstimator;
     private final boolean replayMode;
     private final boolean singlePass;
     private final double ahtSavedMinutes;
@@ -82,6 +84,7 @@ public class AgentChatController {
             TurnState turnState,
             CacheUsageRecorder cacheUsage,
             SingleCallSynthesizer synthesizer,
+            TurnCostEstimator costEstimator,
             @Value("${agent.llm.orchestration:single-pass}") String orchestration,
             @Value("${agent.llm.mode:auto}") String llmMode,
             @Value("${spring.ai.openai.api-key:}") String apiKey,
@@ -97,6 +100,7 @@ public class AgentChatController {
         this.turnState = turnState;
         this.cacheUsage = cacheUsage;
         this.synthesizer = synthesizer;
+        this.costEstimator = costEstimator;
         this.singlePass = !"agentic".equalsIgnoreCase(orchestration);
         this.replayMode = resolveReplay(llmMode, apiKey);
         this.ahtSavedMinutes = ahtSavedMinutes;
@@ -183,6 +187,7 @@ public class AgentChatController {
         log.info("Turn finished: status={} latencyMs={} tools={} citations={} llmRoundTrips={} llmMs={}",
                 status, trace.getTotalLatencyMs(), turnState.getToolsExecuted(), citations,
                 turnState.getLlmRoundTrips(), turnState.getLlmMillis());
+        costEstimator.logTurn(turnState);
         AgentTurnReport report = new AgentTurnReport(
                 sessionId, request.customerId(), snapshot, trace.getSteps(), response, citations,
                 new AgentTurnReport.KpiImpact(status, ahtSaved, trace.getTotalLatencyMs()),

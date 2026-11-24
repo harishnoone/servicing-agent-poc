@@ -58,6 +58,16 @@ public class LlmCallLoggingInterceptor implements ClientHttpRequestInterceptor {
         int status = response.getStatusCode().value();
         byte[] responseBody = response.getBody().readAllBytes();
         finish(start, "HTTP " + status, status == 200 ? usage(responseBody) : errorSummary(responseBody));
+        if (status == 200 && RequestContextHolder.getRequestAttributes() != null) {
+            try {
+                JsonNode u = mapper.readTree(responseBody).path("usage");
+                turnState.getObject().recordTokens(u.path("prompt_tokens").asLong(0),
+                        u.path("completion_tokens").asLong(0),
+                        u.path("prompt_tokens_details").path("cached_tokens").asLong(0));
+            } catch (IOException ignored) {
+                // usage is optional; cost is then reported as unknown
+            }
+        }
         return new BufferedResponse(response, responseBody);
     }
 

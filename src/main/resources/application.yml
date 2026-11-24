@@ -87,6 +87,11 @@ agent:
     #                         with no tools writes the reply. One provider round trip per turn.
     # agentic               = the model plans and calls tools itself: one round trip per step (typically 3-4),
     #                         each with full model latency. Slow on thinking models; kept for comparison (FR-3.1).
+    # Per-turn cost estimate in the "Turn cost:" log line, USD per 1M tokens. Placeholders: set your contract prices.
+    pricing:
+      input-per-million-usd: ${AGENT_LLM_PRICE_INPUT:0.10}
+      output-per-million-usd: ${AGENT_LLM_PRICE_OUTPUT:0.40}
+      cached-input-per-million-usd: ${AGENT_LLM_PRICE_CACHED_INPUT:0.025}
     orchestration: ${AGENT_LLM_ORCHESTRATION:single-pass}
     synthesis:
       # Hard cap on the single model call. On timeout or error the deterministic draft is returned instead.

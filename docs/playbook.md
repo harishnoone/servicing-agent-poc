@@ -218,7 +218,7 @@ Then `docker compose up -d --force-recreate servicing-agent-app` and check the l
 **Avoiding 429s during the demo**
 1. Use a key with billing. Free-tier keys allow about 20 requests per model per day (0 for Pro). Single-pass uses 1 request per turn; agentic uses 2 to 5.
 2. Pace the scripts: `$env:CHAT_PACE_SECONDS = 8` before `demo.ps1 scenarios`, `seed`-driven runs or `demo-smoke.ps1`. Each chat call then waits until at least 8 s have passed since the previous one and prints `(pacing: waiting N s ...)`. In bash: `CHAT_PACE_SECONDS=8 scripts/demo.sh scenarios`.
-3. If the provider still rejects a turn, `demo.ps1 chat` and `demo.sh chat` wait `CHAT_RETRY_WAIT_SECONDS` (default 30) and retry once. The app itself retries 429/503 at most 3 times (1 s, then 2 s).
+3. If the provider still rejects a turn, `demo.ps1 chat` and `demo.sh chat` wait `CHAT_RETRY_WAIT_SECONDS` (default 30) and retry once. The app itself retries a failed model call once (0.5 s), switches to the backup model on a 503 if `AGENT_LLM_FALLBACK_MODELS` is set (section 5.2), and after 3 failed calls the circuit breaker skips the model for 60 s.
 4. In Swagger, leave a few seconds between "Execute" clicks.
 5. A 402 ("prepayment credits are depleted") or a quota 429 will not recover by waiting. Switch to offline: `AGENT_LLM_MODE=replay` and recreate the app (about 10 s).
 
@@ -263,6 +263,33 @@ Check the mode at any time: `docker logs servicing-agent-app 2>&1 | Select-Strin
 **Back to deterministic** from either LLM mode: close that window (the variables live only in that shell), open a new one and run `docker compose up -d --force-recreate servicing-agent-app`. If a key is in `.env`, add `AGENT_LLM_MODE=replay` there instead.
 
 **Mid-demo fallback:** if the provider is slow or out of quota, switch to deterministic as above. Decisions, citations and escalations are the same in every mode.
+
+### 5.2 `.env` for each mode, with backup models
+
+Instead of shell variables you can keep the mode in `.env` (git-ignored) and run `docker compose up -d --force-recreate servicing-agent-app` after each edit. Variables set in the shell override `.env`, so use a fresh window. The key and base URL stay the same in every mode:
+```
+OPENAI_API_KEY=<Gemini API key>
+OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+OPENAI_COMPLETIONS_PATH=/chat/completions
+AGENT_LLM_REASONING_EFFORT=low
+```
+
+| Mode | Add to `.env` | Model calls | What happens when the model is busy or slow |
+|---|---|---|---|
+| Deterministic | `AGENT_LLM_MODE=replay` | 0 | Nothing to fail; the key is ignored |
+| LLM mode (single-pass) | `AGENT_LLM_MODE=llm`<br>`AGENT_LLM_ORCHESTRATION=single-pass`<br>`OPENAI_MODEL=gemini-3.1-flash-lite`<br>`AGENT_LLM_FALLBACK_MODELS=gemini-3.5-flash`<br>`AGENT_LLM_SYNTHESIS_TIMEOUT_MS=15000` | 1 | 503: one call to the backup. Slower than the synthesis cap, or any other error: the deterministic draft is returned |
+| Agent planner | `AGENT_LLM_MODE=llm`<br>`AGENT_LLM_ORCHESTRATION=agentic`<br>`OPENAI_MODEL=gemini-3.6-flash`<br>`AGENT_LLM_FALLBACK_MODELS=gemini-3.5-flash` | 2 to 5 | 503: the call goes to the backup and stays there for 60 s. A timeout (30 s) or other error: `AGENTIC_FALLBACK`, the deterministic answer |
+
+In every LLM mode, 3 failed calls in a row (every model busy, or timeouts) open the circuit breaker: for 60 s turns skip the model and return the deterministic answer straight away (`LLM_CIRCUIT_OPEN` in the trace).
+
+**What was tested (2026-11-24), agent planner mode:**
+- `gemini-3.6-flash` primary with `gemini-3.5-flash` as backup: full turns with 3 model round trips, all HTTP 200.
+- A forced 503 on the primary (local proxy): the trace showed `LLM_MODEL_FALLBACK: <primary> -> gemini-3.5-flash (HTTP 503)` and the turn completed on the backup, with no HTTP 400.
+- Every model busy: the circuit opened after 3 failures and turns returned the deterministic answer in 2 to 5 s.
+- Gemini was heavily loaded that night. Planner turns took 27 to 130 s, and some calls hit the 30 s timeout and fell back. `gemini-3.8-flash` and `gemini-3.1-flash-lite` returned 503 on every call, and `gemini-2.5-flash` returns 404 for new users.
+- The single-pass row was not re-run that night. Single-pass replays no tool calls, so any model works there. A Flash backup is slower than Flash-Lite, and on a slow day it may exceed the synthesis cap and return the draft.
+
+**Rules for picking a backup:** use a model other than `OPENAI_MODEL` (an identical entry is ignored), from the same family. List several, comma-separated, to try them in order. Before the demo, run one turn in the mode you will present and check the trace for `LLM_ROUND_TRIP ... (HTTP 200)`.
 
 ---
 ## 6. Enabling JWT security

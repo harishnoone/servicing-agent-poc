@@ -8,19 +8,25 @@ Java 21 · Spring Boot 3.5 · Spring AI 1.0 · Postgres 16 · Debezium · Kafka 
 - **Exactly-once effect on an at-least-once pipeline.** Deduplication by event id plus a per-row LSN guard; non-blocking retries (1 s, 2 s, 4 s) and a dead-letter topic with inspect and replay.
 - **Grounded answers.** Hybrid BM25 plus vector retrieval in which canonical policy outranks historical case notes. Every policy claim carries a `[doc_id]` citation that is checked against what retrieval actually returned.
 - **Deterministic guardrails.** Waiver eligibility, SLA-breach escalation and the Tier-2 handoff card are computed in Java. The model cannot approve anything.
-- **Fast with a real model.** In LLM mode, Java runs the tools and the model is called **once** per turn (about 1.5 to 2.7 s on Gemini Flash-Lite), with an 8 s cap and a deterministic fallback.
+- **Actions, not just answers, with read-only source data.** An approved waiver or an escalation is published as a Kafka action (`agent.actions.*`); a downstream system of record applies it once and writes the audit row, and CDC brings the result back. Neither the agent nor the admin API writes the warehouse.
+- **Multi-step investigation.** "Why is my bill so high?" chains billing, tickets, waiver eligibility (not applied) and SLA policy, then verifies every amount, invoice, ticket and citation before answering. In agent planner mode the model plans those steps and Java verifies the answer.
+- **Three modes, each with its own SLA.** Deterministic (no model, 1.5 s), LLM mode (Java plans, the model writes the answer in one call, 16 s) and agent planner (the model picks the tools, 60 s). Every mode falls back to the deterministic answer if the model is slow or wrong.
 - **Runs offline.** No API key needed: an offline planner drives the same tools and guardrails.
-- **Observable.** Each response includes the full reasoning trace with per-step latency; logs carry session and customer ids; a KPI endpoint reports deflection, compliance, cache misses, DLT depth and LLM token usage.
+- **Observable.** Each response includes the full reasoning trace with per-step latency; logs carry session and customer ids; every produced action and every turn's estimated LLM cost are logged; a KPI endpoint reports deflection, compliance, cache misses, DLT depth, token usage, estimated cost and the projected prompt-caching saving.
 
 ## Contents
 
 - [Quick start](#quick-start)
 - [How it works](#how-it-works)
 - [Try it](#try-it)
+- [Actions](#actions-the-app-never-writes-the-source-data)
+- [Cost and prompt-caching telemetry](#cost-and-prompt-caching-telemetry)
+- [Three operating modes](#three-operating-modes)
 - [Using a real LLM](#using-a-real-llm)
 - [API](#api)
 - [Configuration](#configuration)
 - [Development](#development)
+- [Roadmap](#roadmap-not-implemented)
 - [Documentation](#documentation)
 - [Known limitations](#known-limitations)
 
@@ -50,13 +56,16 @@ Postgres (warehouse) --WAL--> Debezium --> Kafka --> IdempotentKafkaConsumer -->
                                              |
                                              +--> <topic>-retry-1000 / -2000 / -4000 --> <topic>.DLT
 
+agent.actions.* --> SystemOfRecordWriter (applies once, audit_log) --> Postgres --> CDC --> Redis
+
 POST /api/agent/chat
   PII redaction --> tool plan --> (one model call writes the reply) --> citation check --> AgentTurnReport
                        |
      getCustomerState        Redis; on a miss, bounded warehouse lookup + async re-hydration
      searchPoliciesAndCases  BM25 + dense hybrid search; canonical policy outranks case notes
-     evaluateWaiverRules     pure Java: tier, tenure, amount, prior waivers
-     escalateWithSummary     SLA breach / frustration / low retrieval confidence -> handoff card
+     evaluateWaiverRules     pure Java: tier, tenure, amount, prior waivers; APPROVED -> agent.actions.waiver
+     checkEligibility        same rules, nothing applied (used by the billing investigation)
+     escalateWithSummary     SLA breach / frustration / low retrieval confidence -> handoff card + agent.actions.escalation
      findMatchingOpenTicket  open ticket for the same problem? -> reply as a follow-up, no new ticket
      getDeflectionReport     KPI aggregate
 ```
@@ -104,8 +113,8 @@ A turn's response (trimmed):
 
 | Customer | Expected result |
 |---|---|
-| `cust_123` Elena Vance | Waiver `APPROVED` |
-| `cust_456` Marcus Sterling | ERR-504-GW fix, superseded legacy advice flagged, `SLA_BREACH` escalation with handoff card |
+| `cust_123` Elena Vance | Waiver `APPROVED`, applied downstream: invoice `WAIVED` in Redis via CDC; ticket status within SLA |
+| `cust_456` Marcus Sterling | ERR-504-GW fix, superseded legacy advice flagged, `SLA_BREACH` escalation (handoff card + escalation action); follow-up on TKT-8841 instead of a duplicate ticket |
 | `cust_789` Jordan Blake | `TIER_INELIGIBLE`, clean denial |
 | `cust_222` Noah Patel | Waiver `APPROVED` |
 | `cust_321` Priya Nair | `TENURE_TOO_SHORT`, escalated for supervisor review |
@@ -122,13 +131,14 @@ The first three exist after startup; the rest after `seed`. All customer data is
 Verify everything end to end. There are two scripts with the same functional checks. Run them on a fresh stack, because they change data.
 
 ```powershell
-# Deterministic (offline planner): 29 checks, 1500 ms per-turn budget
+# Deterministic (offline planner): 1500 ms per-turn budget; covers CDC, waiver and escalation actions, duplicate tickets, cache miss, override, KPIs
 powershell -ExecutionPolicy Bypass -File scripts/demo-smoke.ps1
 
-# Live LLM (Gemini Flash-Lite, single-pass): 30 checks, 16000 ms per-turn budget (15 s synthesis timeout, 2048 output tokens), 8 s pacing.
+# Live LLM mode (Gemini Flash-Lite, single-pass): same checks plus "the model wrote a reply", 16000 ms per-turn budget (15 s synthesis timeout, 2048 output tokens), 8 s pacing.
 # Switches the app to live mode for the run, then back to offline. The key is read from this shell only.
 $env:GEMINI_API_KEY = '<AI Studio key>'
 powershell -ExecutionPolicy Bypass -File scripts/demo-smoke-live.ps1      # -KeepLive to stay in live mode
+powershell -ExecutionPolicy Bypass -File scripts/demo-smoke-live.ps1 -Orchestration agentic   # agent planner mode, 60000 ms budget
 ```
 
 The live run also reports how many replies the model wrote and how many fell back to the deterministic draft (provider timeout or error). Decisions are identical either way.
@@ -261,11 +271,11 @@ Interactive docs: `http://localhost:8080/swagger-ui.html`.
 | POST | `/api/demo/mutate` | Insert a charge into the warehouse (triggers CDC) |
 | POST | `/api/demo/customers` | Create a customer (409 if it exists) |
 | POST | `/api/demo/customers/{id}` | Update tier, tenure or waiver count |
-| POST | `/api/admin/overrides/waiver` (returns `ACCEPTED` + `actionId`; applied downstream via `agent.actions.waiver`) | | Create a ticket; `slaHoursFromNow` < 0 means already breached. If an open ticket already covers the same problem, nothing is inserted and the existing id is returned with `duplicate=true` |
+| POST | `/api/demo/tickets` | Create a ticket; `slaHoursFromNow` < 0 means already breached. If an open ticket already covers the same problem, nothing is inserted and the existing id is returned with `duplicate=true` |
 | GET | `/api/demo/profile/{id}` | The cached Redis profile the agent sees |
 | POST | `/api/demo/poison-pill` | Publish an unparseable CDC message to exercise retries and the DLT |
 | DELETE | `/api/demo/cache/{id}` | Evict a Redis profile to simulate a dormant account |
-| POST | `/api/admin/overrides/waiver` | Supervisor waiver override with an append-only audit entry |
+| POST | `/api/admin/overrides/waiver` | Supervisor waiver override: validates, publishes a `waiver` action and returns `ACCEPTED` + `actionId`; the system of record applies it once and writes the audit row |
 | GET | `/api/admin/kafka/dlt` | Dead-letter depth and pending records with failure headers |
 | POST | `/api/admin/kafka/dlt/replay` | Republish dead-letter records to the original topic |
 
@@ -341,12 +351,13 @@ Requirement ids in code comments (e.g. `FR-3.8`) refer to `docs/requirements.md`
 ## Known limitations
 
 - The LLM path has been run against Gemini only, not OpenAI.
-- With a model in the loop a turn takes about 1.4 to 2.7 s (the model call); the <1.5 s P95 target is met only by the offline planner (2 to 65 ms). Streaming the reply is the next step.
-- Prompt-caching savings are unmeasured: Gemini's OpenAI-compatible endpoint does not report cached tokens.
-- Single-pass mode uses a keyword-based tool plan; open-ended questions outside its intents get a general account summary (agentic mode handles them, more slowly).
+- With a model in the loop a turn takes about 1.5 to 5 s in LLM mode and 4 to 47 s in agent planner mode (provider load varies); the <1.5 s P95 target is met only by deterministic mode (2 to 65 ms). Streaming the reply is the next step.
+- Prompt-caching savings are estimated, not measured: Gemini's OpenAI-compatible endpoint does not report cached tokens, so `projectedCachingSavingPercent` is a ceiling, and the default prices are placeholders.
+- Deterministic and LLM mode use a keyword-based tool plan; vague questions ("any news?") get the general account summary, which still names open tickets and escalates breaches. Agent planner mode handles any phrasing, more slowly.
 - The vector half of hybrid search is a local character-trigram embedding so the stack runs offline; swap `KnowledgeRetrievalTools.embed()` for a real embedding model.
 - KPI counters are in memory; "deflection" means resolved without escalation, not a measured re-contact rate.
-- Autonomous approvals are written to `audit_log` only; nothing is written back to a billing system.
+- The system of record that applies actions runs inside the app container; in production it is a separate service with its own write credentials. The `ticket-note` and `sla-credit` action topics have a consumer but no producer yet.
+- Demo seeding endpoints (`/api/demo/*`) still write the warehouse directly: they are test fixtures, not part of the product surface.
 - No server-side throttle around the model call (client pacing and bounded retries only).
 - No prompt-injection screen or model-based intent triage. This is deliberate for the POC (one generative model plus deterministic Java guardrails). The production path puts a dedicated decision model (`gemini-decision-1`) in front of Flash; see [`docs/design.md`](docs/design.md) §9.
 

@@ -2,6 +2,7 @@ package poc.demo.servicing.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import poc.demo.servicing.agent.actions.ActionPublisher;
 import poc.demo.servicing.agent.admin.AuditService;
 import poc.demo.servicing.agent.cache.WarehouseFallbackRepository;
 import poc.demo.servicing.agent.dlt.DltService;
@@ -63,6 +64,7 @@ class DemoScenariosTest {
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper mapper;
     @MockitoBean AuditService auditService;
+    @MockitoBean ActionPublisher actionPublisher;
     @MockitoBean WarehouseFallbackRepository warehouse;
     @MockitoBean DltService dltService;
 
@@ -113,8 +115,7 @@ class DemoScenariosTest {
                 .anyMatch(e -> e.startsWith("TOOL_CALL: getCustomerState (REDIS_HIT)"))
                 .anyMatch(e -> e.startsWith("TOOL_CALL: searchPoliciesAndCases"))
                 .doesNotContain("COMPLIANCE_VIOLATION_RECORDED");
-        verify(auditService).append(eq("WAIVER_APPROVED_AUTONOMOUS"), eq("agent:tier1"), eq("cust_123"),
-                isNull(), argThat(a -> a.compareTo(new BigDecimal("45")) == 0), anyString());
+        verify(actionPublisher).publish(eq("waiver"), eq("cust_123"), eq("INV-A"), argThat(a -> a.compareTo(new BigDecimal("45")) == 0), eq("APPROVED"), eq("agent:tier1"), any(), any());
     }
 
     @Test
@@ -147,7 +148,7 @@ class DemoScenariosTest {
         assertThat(events(r)).contains("TOOL_CALL: evaluateWaiverRules -> TIER_INELIGIBLE");
         assertThat(r.path("finalResponse").asText()).contains("cannot waive").contains("$25.00");
         assertThat(r.path("handoffCard").isNull()).isTrue();
-        verify(auditService, never()).append(eq("WAIVER_APPROVED_AUTONOMOUS"), any(), eq("cust_789"), any(), any(), any());
+        verify(actionPublisher, never()).publish(eq("waiver"), eq("cust_789"), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -295,7 +296,7 @@ class DemoScenariosTest {
         assertThat(mapper.convertValue(r.path("citations"), List.class))
                 .contains("billing_waivers_policy.md#sec-4.2", "sla_credit_policy.md#sec-4.1");
         assertThat(r.at("/kpiImpact/deflectionStatus").asText()).isEqualTo("RESOLVED_AUTONOMOUSLY");
-        verify(auditService, never()).append(eq("WAIVER_APPROVED_AUTONOMOUS"), any(), eq("cust_246"), any(), any(), any());
+        verify(actionPublisher, never()).publish(eq("waiver"), eq("cust_246"), any(), any(), any(), any(), any(), any());
     }
 
     @Test

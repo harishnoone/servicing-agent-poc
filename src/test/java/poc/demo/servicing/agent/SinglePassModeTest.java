@@ -2,6 +2,7 @@ package poc.demo.servicing.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import poc.demo.servicing.agent.actions.ActionPublisher;
 import poc.demo.servicing.agent.admin.AuditService;
 import poc.demo.servicing.agent.cache.WarehouseFallbackRepository;
 import poc.demo.servicing.agent.dlt.DltService;
@@ -61,6 +62,7 @@ class SinglePassModeTest {
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper mapper;
     @MockitoBean AuditService auditService;
+    @MockitoBean ActionPublisher actionPublisher;
     @MockitoBean WarehouseFallbackRepository warehouse;
     @MockitoBean DltService dltService;
     @MockitoBean SingleCallSynthesizer synthesizer;

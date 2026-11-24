@@ -403,6 +403,28 @@ Demo: `scripts/demo.ps1 caching [customerId] [turns]` (and `demo.sh caching`) se
 - **Logging:** `logback-spring.xml` writes console lines with `[sessionId customerId]` from MDC. `AgentChatController` logs `Turn started` and `Turn finished` (status, latency, tools, citations, LLM round trips and model milliseconds). `LlmCallLoggingInterceptor` logs every model call with HTTP status, duration and raw provider usage, and adds `LLM_ROUND_TRIP #n (HTTP 200)` with its latency to the reasoning trace. `IdempotentKafkaConsumer` logs `CDC applied table=... id=... created|updated op=... lsn=... topic=... offset=...` for every applied event with `customerId` in the MDC, ids only (FR-7.5). `DemoMutationController` logs `Duplicate ticket prevented: existing=... reason=...` (FR-6.4).
 
 ---
+### 4.10 Actions: the app never writes the source data (FR-9)
+
+Every resolution that changes something is an action event on Kafka. The agent and the admin API only read the warehouse and publish; a downstream system of record applies the change and writes the audit row, and CDC brings the result back into Redis.
+
+```
+agent turn / admin override
+  -> rules decide (Java)
+  -> ActionPublisher -> agent.actions.<type>   (key = customerId, content-derived actionId, ids and reason codes only)
+  -> SystemOfRecordWriter (stand-in for billing / case management; the only warehouse writer)
+       applied_actions(action_id) + the write + audit_log row, in one transaction (a repeat is skipped)
+  -> Debezium CDC -> Redis -> the agent sees the result
+```
+
+| Topic | Produced when | Applied by the system of record |
+|---|---|---|
+| `agent.actions.waiver` | Rules return `APPROVED`, or a supervisor override | Invoice `WAIVED`, waiver count +1, audit `WAIVER_APPROVED_AUTONOMOUS` or `WAIVER_OVERRIDE` |
+| `agent.actions.escalation` | Any escalation (one per turn) | Audit `ESCALATION_HANDOFF` with the trigger (stand-in for a Tier-2 case queue) |
+| `agent.actions.ticket-note`, `agent.actions.sla-credit` | Reserved; not produced yet | Audit row (consumer ready) |
+
+Each produced action logs `Action produced: topic=... key=... actionId=... type=... reason=... payload={...}`, and each applied one logs `System of record: APPLIED|DUPLICATE_SKIPPED ...`. The agent's trace shows `ACTION_PUBLISHED: <type> <actionId> -> <topic>`. The admin override returns `status: ACCEPTED` with the `actionId`. Tail them with `docker logs -f servicing-agent-app 2>&1 | Select-String "Action produced|System of record"`.
+
+In production the system of record is a separate service with its own write credentials, and the admin API sits behind a proxy; here it runs in the same container so the POC stays local. Demo seeding endpoints (`/api/demo/*`) still write directly: they are test fixtures, not part of the product surface.
 ### 4.9 Three operating modes and their latency SLAs
 
 One codebase, three ways to run a turn. Java owns every decision, fact and action in all three; the modes differ in how much the LLM does. Switch with `AGENT_LLM_MODE` and `AGENT_LLM_ORCHESTRATION` (see "Using a real LLM").
@@ -620,6 +642,7 @@ Status as of 2026-11-21. "Verified" means a test or live check asserts the requi
 | FR-7.3 Swagger UI | springdoc, bearer scheme | Live: `/swagger-ui.html` 200 | Done |
 | FR-8.1 OAuth2 RBAC | `SecurityConfig`, `@PreAuthorize` | `SecurityJwtModeTest`: 401 without token, 403 wrong scope, 200 supervisor | Done (open in no-IdP demo mode) |
 | FR-8.2 Override + audit | `AdminOverrideService`, `AuditService`, append-only trigger | JWT `sub` recorded (`SecurityJwtModeTest`); smoke: audit row, DELETE rejected, WAIVED reaches Redis | Done |
+| FR-9 Actions via Kafka | `ActionPublisher` (`agent.actions.*`, content-derived ids, `Action produced` log), `SystemOfRecordWriter` (`applied_actions` idempotency, audit), waiver approval in `DeterministicRulesTools`, escalation in `EscalationTools`, `AdminOverrideService` publishes only | `DemoScenariosTest` verifies the waiver action (and none for denials and investigations); `SecurityJwtModeTest` `ACCEPTED`; live 2026-11-24: smoke, scenario 2 twice, scenario 8 with a repeated override (one audit row), all 12 scenarios; escalations applied as `ESCALATION_HANDOFF` | Done. Writer runs in the app container; ticket-note and sla-credit topics have a consumer but no producer yet |
 | FR-8.3 DLT replay | `DltService`, `/api/admin/kafka/dlt[/replay]` | `DeadLetterRoutingTest` (depth 1 → replay → 0); live | Done |
 | NFR-1 Offline | Offline planner, local embeddings, no key needed | All scenarios run offline | Done; Ollama not wired (an OpenAI-compatible Ollama URL may work, untested) |
 | NFR-2 Footprint / start | 512 MB app heap | Stack healthy about 1 min after a cached build | Not formally measured |
@@ -727,5 +750,6 @@ The decision model sits only on the routing and grading edges. Eligibility, waiv
 | 2026-11-21 | Implementation | §4.9 three operating modes with latency SLAs (1.5 s / 16 s / 60 s); agent planner mode for investigations (checkEligibility @Tool, prompt rule 7, AGENTIC_VERIFIED, rule-engine citations grounded); NFR-5. Affects Slides 3, 5, 8 |
 | 2026-11-23 | Fix | Model HTTP client: 5 s connect / 15 s read timeout; agent planner mode falls back to the deterministic answer on a failed model call (AGENTIC_FALLBACK). §4.9 SLA note. Affects Slide 8 |
 | 2026-11-23 | Implementation | FR-6.5 ticket status inquiry; agent planner mode now enforces the escalation check when the model skips it (found live: "What is my status?" left a breached ticket unescalated). §8 row, 93 tests, scenario 12. Affects Slides 5, 8 |
+| 2026-11-24 | Implementation | §4.10 actions through Kafka (FR-9): ActionPublisher, SystemOfRecordWriter, admin override publishes only, app read-only on source data. Affects Slides 4, 5, 7 |
 
 > **How to use this changelog:** Add a row for every architectural decision — component swaps, new tools added to the agent, latency target adjustments, schema changes. Reference the slide number it affects so the deck stays in sync.

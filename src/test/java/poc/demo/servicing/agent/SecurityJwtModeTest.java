@@ -58,14 +58,14 @@ class SecurityJwtModeTest {
     @Test
     void supervisorCanOverrideAndSubjectIsAudited() throws Exception {
         when(overrideService.applyWaiverOverride(any(), any(), any(), any(), any())).thenReturn(
-                new AdminOverrideService.OverrideResult(1L, "cust_456", "INV-2025-456-001", new BigDecimal("75.00"),
-                        "supervisor-jane", Instant.now(), "APPLIED"));
+                new AdminOverrideService.OverrideResult("waiver-abc123", "cust_456", "INV-2025-456-001", new BigDecimal("75.00"),
+                        "supervisor-jane", Instant.now(), "ACCEPTED"));
 
         mvc.perform(post("/api/admin/overrides/waiver").contentType(MediaType.APPLICATION_JSON).content(OVERRIDE)
                         .with(jwt().jwt(j -> j.subject("supervisor-jane"))
                                 .authorities(new SimpleGrantedAuthority("SCOPE_servicing.supervisor"))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("APPLIED"));
+                .andExpect(jsonPath("$.status").value("ACCEPTED"));
 
         verify(overrideService).applyWaiverOverride(eq("supervisor-jane"), eq("cust_456"), eq("INV-2025-456-001"),
                 argThat(a -> a.compareTo(new BigDecimal("75")) == 0), contains("ERR-504-GW"));

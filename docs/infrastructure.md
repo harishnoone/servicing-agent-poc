@@ -314,6 +314,12 @@ Demo endpoints used by the scripts: `POST /api/demo/customers`, `POST /api/demo/
 
 ---
 
+## Action topics (FR-9)
+
+`agent.actions.waiver`, `agent.actions.escalation`, `agent.actions.ticket-note` and `agent.actions.sla-credit` are created on first use (Kafka auto-create). Consumer group `system-of-record`. The writer creates `applied_actions` (idempotency) on first use; `audit_log` stays append-only. Inspect: `docker exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:29092 --topic agent.actions.waiver --from-beginning`.
+
+---
+
 ## Future infrastructure: decision-model gateway (planned, NOT IMPLEMENTED)
 
 Nothing here is in `compose.yaml` or `application.yml` today. See `design.md` §9 and `requirements.md` §6.

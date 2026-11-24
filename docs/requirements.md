@@ -151,6 +151,16 @@ Every functional requirement maps directly to one or more of the following spons
 
 ---
 
+### Requirement 9: Actions Through Kafka, Read-Only Source Data
+
+**FR-9.1:** WHEN a resolution changes something (an approved waiver, an escalation), THE SYSTEM SHALL publish an action event to `agent.actions.<type>` keyed by customer id, with a content-derived action id, the rule reason code and the actor, and SHALL NOT write the warehouse itself. Each produced action SHALL be logged with its payload; events SHALL contain ids and reason codes only.
+
+**FR-9.2:** A downstream system of record SHALL apply each action exactly once (action id recorded in the same transaction as the write) and SHALL write the audit row. The result SHALL reach the agent through CDC.
+
+**FR-9.3:** THE supervisor override API SHALL validate with reads, publish a waiver action and return `ACCEPTED` with the action id; repeating the same override SHALL apply it once.
+
+---
+
 ## 4. Non-Functional Requirements & Operational Constraints
 
 **NFR-1 (Offline Portability):** The entire multi-container stack (`compose.yaml`) must boot and execute all 3 core demonstration scenarios locally on a developer laptop without external internet dependencies (supporting local Ollama models or deterministic replay fallback alongside cloud LLM providers).
@@ -207,6 +217,7 @@ Non-functional targets (to be confirmed by measurement): added latency per gated
 | 2026-11-20 | Fix | Restored Requirements 4 to 8, accidentally removed by an edit on 2026-11-19, from the v1.3 text (unchanged since) |
 | 2026-11-19 | Update | Compose file name (`compose.yaml`); implementation status of every requirement is tracked in design.md §8 |
 | 2026-11-21 | Scope | Added decision-model screening/triage/grading to Out-of-Scope as a production scale-up item, per design.md §6. Added §6 Future Requirements (FR-F1 to FR-F6, planned only), per design.md §9 |
+| 2026-11-24 | Scope | Added Requirement 9 (FR-9.1 to FR-9.3): actions through Kafka, read-only source data, idempotent system-of-record writer; implemented, verified per design.md §8 |
 | 2026-11-23 | Scope | Added FR-6.5 (ticket status inquiry; escalation check enforced by Java in agent planner mode); implemented, verified per design.md §8 |
 | 2026-11-21 | Scope | Added FR-3.10 (multi-step billing investigation with fact verification); implemented, verified per design.md §8 |
 | 2026-11-21 | Scope | Added FR-1.5 (complete profile regardless of CDC event order or eviction); implemented, verified in tests per design.md §8 | (existing-ticket recognition), FR-6.4 (no duplicate tickets for the same problem) and FR-7.5 (CDC consume logging); implemented and verified per design.md §8 |

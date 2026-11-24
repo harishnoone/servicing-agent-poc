@@ -1,6 +1,6 @@
 package poc.demo.servicing.agent.tools;
 
-import poc.demo.servicing.agent.admin.AuditService;
+import poc.demo.servicing.agent.actions.ActionPublisher;
 import poc.demo.servicing.agent.model.CustomerProfile;
 import poc.demo.servicing.agent.model.WaiverEvaluationResult;
 import poc.demo.servicing.agent.telemetry.TraceCollector;
@@ -39,7 +39,7 @@ public class DeterministicRulesTools {
     private final CustomerContextTools customerContextTools;
     private final TraceCollector       traceCollector;
     private final TurnState            turnState;
-    private final AuditService         auditService;
+    private final ActionPublisher      actions;
 
     public DeterministicRulesTools(
             @Value("${agent.rules.waiver.max-fee-amount}")       BigDecimal maxFeeAmount,
@@ -49,7 +49,7 @@ public class DeterministicRulesTools {
             CustomerContextTools customerContextTools,
             TraceCollector traceCollector,
             TurnState turnState,
-            AuditService auditService) {
+            ActionPublisher actions) {
         this.maxFeeAmount         = maxFeeAmount.setScale(2, RoundingMode.HALF_UP);
         this.minTenureMonths      = minTenureMonths;
         this.eligibleTiers        = Arrays.stream(eligibleTiersStr.split(","))
@@ -58,7 +58,7 @@ public class DeterministicRulesTools {
         this.customerContextTools = customerContextTools;
         this.traceCollector       = traceCollector;
         this.turnState            = turnState;
-        this.auditService         = auditService;
+        this.actions              = actions;
     }
 
     /**
@@ -112,12 +112,23 @@ public class DeterministicRulesTools {
         return result;
     }
 
-    /** Approval is emitted as an auditable action event; failure to audit must not break the turn. */
+    /**
+     * FR-9.1: an approval is published as a waiver action; the downstream system of record applies it (invoice
+     * WAIVED, waiver count +1, audit row) and CDC brings the change back. A publish failure must not break the turn.
+     */
     private void emitApprovalAuditEvent(String customerId, BigDecimal amount, WaiverEvaluationResult result) {
+        if (actions == null) {
+            return;
+        }
         try {
-            auditService.append("WAIVER_APPROVED_AUTONOMOUS", "agent:tier1", customerId, null, amount, result.explanation());
+            String invoiceId = customerContextTools.loadProfile(customerId).recentCharges().stream()
+                    .filter(c -> "LATE_FEE".equalsIgnoreCase(c.chargeType()) && "UNPAID".equalsIgnoreCase(c.status())
+                            && c.amount().compareTo(amount) == 0)
+                    .map(CustomerProfile.LedgerEntry::invoiceId).findFirst().orElse(null);
+            actions.publish("waiver", customerId, invoiceId, amount, result.reasonCode(), "agent:tier1",
+                    invoiceId == null ? amount.toPlainString() : invoiceId, result.policyCitation());
         } catch (Exception e) {
-            log.warn("Could not write approval audit event for {}: {}", customerId, e.getMessage());
+            log.warn("Could not publish waiver action for {}: {}", customerId, e.getMessage());
         }
     }
 

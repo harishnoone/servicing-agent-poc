@@ -1,9 +1,13 @@
 package poc.demo.servicing.agent.tools;
 
+import poc.demo.servicing.agent.actions.ActionPublisher;
 import poc.demo.servicing.agent.model.AgentTurnReport.AgentHandoffCard;
 import poc.demo.servicing.agent.model.CustomerProfile;
 import poc.demo.servicing.agent.telemetry.TraceCollector;
 import poc.demo.servicing.agent.telemetry.TurnState;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,14 +46,18 @@ public class EscalationTools {
     private final TurnState turnState;
     private final double minRetrievalConfidence;
     private final Clock clock;
+    private ActionPublisher actions;
+    private static final Logger log = LoggerFactory.getLogger(EscalationTools.class);
 
     @Autowired
     public EscalationTools(
             CustomerContextTools customerContextTools,
             TraceCollector traceCollector,
             TurnState turnState,
-            @Value("${agent.escalation.min-retrieval-confidence:0.72}") double minRetrievalConfidence) {
+            @Value("${agent.escalation.min-retrieval-confidence:0.72}") double minRetrievalConfidence,
+            ActionPublisher actions) {
         this(customerContextTools, traceCollector, turnState, minRetrievalConfidence, Clock.systemUTC());
+        this.actions = actions;
     }
 
     EscalationTools(CustomerContextTools customerContextTools, TraceCollector traceCollector,
@@ -119,6 +127,16 @@ public class EscalationTools {
                 recommendedAction(triggers));
 
         turnState.markEscalated(card);
+        if (actions != null && !turnState.getToolsExecuted().contains("escalationPublished")) {
+            try {
+                // FR-9.1: the handoff is an action; one per turn (the agentic path can call this tool twice).
+                actions.publish("escalation", profile.customerId(), null, null, String.join(",", triggers),
+                        "agent:tier1", MDC.get("sessionId"), "intent=" + card.classifiedIntent() + " urgency=" + urgency);
+                turnState.recordTool("escalationPublished");
+            } catch (Exception e) {
+                log.warn("Could not publish escalation action for {}: {}", profile.customerId(), e.getMessage());
+            }
+        }
         traceCollector.record("TOOL_CALL: escalateWithSummary -> ESCALATED " + triggers,
                 System.currentTimeMillis() - start);
         return new EscalationDecision(true, String.join(",", triggers), card);

@@ -105,11 +105,15 @@ Check "Cache miss: Redis re-hydrated" (WaitFor { Profile "cust_123" } 5)
 $o = Invoke-RestMethod -Method Post "$base/api/admin/overrides/waiver" -ContentType "application/json" -Body (@{
     customerId = "cust_456"; invoiceId = "INV-2025-456-001"; amount = 35.00
     justification = "Goodwill credit during ERR-504-GW outage" } | ConvertTo-Json)
-Check "Override applied with audit id $($o.auditId)" ($o.status -eq "APPLIED" -and $o.auditId)
-$audit = docker exec warehouse-db psql -U warehouse_admin -d enterprise_warehouse -tAc "SELECT action||'|'||supervisor_sub FROM audit_log WHERE audit_id=$($o.auditId)"
-Check "Audit row written ($audit)" ($audit -eq "WAIVER_OVERRIDE|demo-mode-no-idp")
+Check "Override accepted as action $($o.actionId) (no direct write)" ($o.status -eq "ACCEPTED" -and $o.actionId)
+$auditSql = "SELECT audit_id FROM audit_log WHERE justification LIKE 'action=$($o.actionId);%' ORDER BY audit_id LIMIT 1"
+$script:auditId = $null
+$applied = WaitFor { $script:auditId = docker exec warehouse-db psql -U warehouse_admin -d enterprise_warehouse -tAc $auditSql; [bool]"$script:auditId".Trim() } 20
+Check "System of record applied the action from Kafka (audit id $($script:auditId))" $applied
+$audit = docker exec warehouse-db psql -U warehouse_admin -d enterprise_warehouse -tAc "SELECT action||'|'||supervisor_sub FROM audit_log WHERE audit_id=$($script:auditId)"
+Check "Audit row written by the system of record ($audit)" ($audit -eq "WAIVER_OVERRIDE|demo-mode-no-idp")
 $ErrorActionPreference = "Continue"
-$del = docker exec warehouse-db psql -U warehouse_admin -d enterprise_warehouse -tAc "DELETE FROM audit_log WHERE audit_id=$($o.auditId)" 2>&1 | Out-String
+$del = docker exec warehouse-db psql -U warehouse_admin -d enterprise_warehouse -tAc "DELETE FROM audit_log WHERE audit_id=$($script:auditId)" 2>&1 | Out-String
 $ErrorActionPreference = "Stop"
 Check "Audit log rejects DELETE" ("$del" -match "append-only")
 Check "Override reached Redis via CDC (invoice WAIVED)" (WaitFor { ((Profile "cust_456").recentCharges | Where-Object { $_.invoiceId -eq "INV-2025-456-001" }).status -eq "WAIVED" } 20)

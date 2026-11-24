@@ -7,6 +7,11 @@ Per-requirement status lives in `docs/design.md` §8; spec-level history is in t
 ## [Unreleased]
 
 ### Added
+- **Actions through Kafka; the app no longer writes source data (FR-9).** Approved waivers and escalations are published as action events (`agent.actions.waiver`, `agent.actions.escalation`; `ticket-note` and `sla-credit` reserved) with content-derived ids and an `Action produced: ... payload={...}` log line. A downstream `SystemOfRecordWriter` (consumer group `system-of-record`) applies each action once (`applied_actions`) and writes the audit row; CDC brings the result back. An approved waiver now really waives the invoice and counts against the 12-month limit.
+
+### Changed
+- **Admin override publishes instead of writing.** `POST /api/admin/overrides/waiver` validates with reads, publishes a waiver action and returns `status: ACCEPTED` with `actionId` (was `APPLIED` with `auditId`). Repeating the same override applies it once. Scenario 2 now resets Elena before each run, since approvals change data; scenario 8 checks the repeated override.
+
 - **Per-turn cost log (FR-3.7).** Every turn with a model call logs `Turn cost: llmCalls=... promptTokens=... completionTokens=... staticPrefixTokens=... estCostUsd=... ifPrefixCachedUsd=... projectedSaving=...% providerReportedCachedTokens=...`. Tokens are summed over all model calls in the turn. Prices come from `agent.llm.pricing.*` (`AGENT_LLM_PRICE_INPUT`, `_OUTPUT`, `_CACHED_INPUT`; defaults are placeholders, set your contract prices). The saving is a ceiling: Gemini's OpenAI-compatible endpoint reports no cached tokens. Measured on scenario 11: LLM mode 1 call, 1,982 prompt tokens, est. $0.000265, 31% projected saving; agent planner 5 calls, 12,212 prompt tokens, est. $0.001364, 30%.
 - **Ticket status inquiry (FR-6.5).** "What's the status of my ticket?", "any update on my ticket" or a ticket id now lists the customer's open tickets (or the named one) with subject, status and SLA time left or hours breached; a breached ticket escalates. Scenario `scripts/scenarios/12-ticket-status.ps1` (Elena within SLA, Marcus past SLA, vague question). Passed offline and in live agent planner mode. Tests: 93.
 

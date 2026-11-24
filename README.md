@@ -158,6 +158,28 @@ Or run one scenario at a time, so you can pick what to show (each prints its tra
 
 A step-by-step demo script and troubleshooting table are in [`docs/playbook.md`](docs/playbook.md).
 
+## Actions: the app never writes the source data
+
+Every resolution that changes something is an action event on Kafka. The agent and the admin API only read the warehouse and publish; a downstream system of record applies the change and writes the audit row, and CDC brings the result back into Redis.
+
+```
+agent turn / admin override
+  -> rules decide (Java)
+  -> ActionPublisher -> agent.actions.<type>   (key = customerId, content-derived actionId, ids and reason codes only)
+  -> SystemOfRecordWriter (stand-in for billing / case management; the only warehouse writer)
+       applied_actions(action_id) + the write + audit_log row, in one transaction (a repeat is skipped)
+  -> Debezium CDC -> Redis -> the agent sees the result
+```
+
+| Topic | Produced when | Applied by the system of record |
+|---|---|---|
+| `agent.actions.waiver` | Rules return `APPROVED`, or a supervisor override | Invoice `WAIVED`, waiver count +1, audit `WAIVER_APPROVED_AUTONOMOUS` or `WAIVER_OVERRIDE` |
+| `agent.actions.escalation` | Any escalation (one per turn) | Audit `ESCALATION_HANDOFF` with the trigger (stand-in for a Tier-2 case queue) |
+| `agent.actions.ticket-note`, `agent.actions.sla-credit` | Reserved; not produced yet | Audit row (consumer ready) |
+
+Each produced action logs `Action produced: topic=... key=... actionId=... type=... reason=... payload={...}`, and each applied one logs `System of record: APPLIED|DUPLICATE_SKIPPED ...`. The agent's trace shows `ACTION_PUBLISHED: <type> <actionId> -> <topic>`. The admin override returns `status: ACCEPTED` with the `actionId`. Tail them with `docker logs -f servicing-agent-app 2>&1 | Select-String "Action produced|System of record"`.
+
+In production the system of record is a separate service with its own write credentials, and the admin API sits behind a proxy; here it runs in the same container so the POC stays local. Demo seeding endpoints (`/api/demo/*`) still write directly: they are test fixtures, not part of the product surface.
 ## Three operating modes
 
 One codebase, three ways to run a turn. Java owns every decision, fact and action in all three; the modes differ in how much the LLM does. Switch with `AGENT_LLM_MODE` and `AGENT_LLM_ORCHESTRATION` (see "Using a real LLM").
@@ -221,7 +243,7 @@ Interactive docs: `http://localhost:8080/swagger-ui.html`.
 | POST | `/api/demo/mutate` | Insert a charge into the warehouse (triggers CDC) |
 | POST | `/api/demo/customers` | Create a customer (409 if it exists) |
 | POST | `/api/demo/customers/{id}` | Update tier, tenure or waiver count |
-| POST | `/api/demo/tickets` | Create a ticket; `slaHoursFromNow` < 0 means already breached. If an open ticket already covers the same problem, nothing is inserted and the existing id is returned with `duplicate=true` |
+| POST | `/api/admin/overrides/waiver` (returns `ACCEPTED` + `actionId`; applied downstream via `agent.actions.waiver`) | | Create a ticket; `slaHoursFromNow` < 0 means already breached. If an open ticket already covers the same problem, nothing is inserted and the existing id is returned with `duplicate=true` |
 | GET | `/api/demo/profile/{id}` | The cached Redis profile the agent sees |
 | POST | `/api/demo/poison-pill` | Publish an unparseable CDC message to exercise retries and the DLT |
 | DELETE | `/api/demo/cache/{id}` | Evict a Redis profile to simulate a dormant account |

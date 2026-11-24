@@ -266,19 +266,53 @@ Check the mode at any time: `docker logs servicing-agent-app 2>&1 | Select-Strin
 
 ### 5.2 `.env` for each mode, with backup models
 
-Instead of shell variables you can keep the mode in `.env` (git-ignored) and run `docker compose up -d --force-recreate servicing-agent-app` after each edit. Variables set in the shell override `.env`, so use a fresh window. The key and base URL stay the same in every mode:
+Keep the mode in `.env` (git-ignored). Replace the whole file with one of the blocks below, put your key on the first line, then run:
+```powershell
+docker compose up -d --force-recreate servicing-agent-app
+```
+Variables set in the shell override `.env`, so run it from a fresh window. Check the mode with `docker logs servicing-agent-app 2>&1 | Select-String "Agent planner mode" | Select-Object -Last 1`.
+
+**Deterministic** (offline, 1.5 s SLA). Log: `Agent planner mode: DETERMINISTIC_REPLAY (offline)`
 ```
 OPENAI_API_KEY=<Gemini API key>
 OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
 OPENAI_COMPLETIONS_PATH=/chat/completions
-AGENT_LLM_REASONING_EFFORT=low
+AGENT_LLM_MODE=replay
 ```
 
-| Mode | Add to `.env` | Model calls | What happens when the model is busy or slow |
-|---|---|---|---|
-| Deterministic | `AGENT_LLM_MODE=replay` | 0 | Nothing to fail; the key is ignored |
-| LLM mode (single-pass) | `AGENT_LLM_MODE=llm`<br>`AGENT_LLM_ORCHESTRATION=single-pass`<br>`OPENAI_MODEL=gemini-3.1-flash-lite`<br>`AGENT_LLM_FALLBACK_MODELS=gemini-3.5-flash`<br>`AGENT_LLM_SYNTHESIS_TIMEOUT_MS=15000` | 1 | 503: one call to the backup. Slower than the synthesis cap, or any other error: the deterministic draft is returned |
-| Agent planner | `AGENT_LLM_MODE=llm`<br>`AGENT_LLM_ORCHESTRATION=agentic`<br>`OPENAI_MODEL=gemini-3.6-flash`<br>`AGENT_LLM_FALLBACK_MODELS=gemini-3.5-flash` | 2 to 5 | 503: the call goes to the backup and stays there for 60 s. A timeout (30 s) or other error: `AGENTIC_FALLBACK`, the deterministic answer |
+**LLM mode, single-pass** (1 model call per turn, 16 s SLA). Log: `Agent planner mode: LLM single-pass (Java tool plan + one model call)`
+```
+OPENAI_API_KEY=<Gemini API key>
+OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+OPENAI_COMPLETIONS_PATH=/chat/completions
+AGENT_LLM_MODE=llm
+AGENT_LLM_ORCHESTRATION=single-pass
+AGENT_LLM_REASONING_EFFORT=low
+OPENAI_MODEL=gemini-3.1-flash-lite
+AGENT_LLM_FALLBACK_MODELS=gemini-3.5-flash
+AGENT_LLM_SYNTHESIS_TIMEOUT_MS=15000
+AGENT_LLM_SYNTHESIS_MAX_TOKENS=2048
+AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS=30
+```
+
+**Agent planner** (2 to 5 model calls per turn, 60 s SLA). Log: `Agent planner mode: LLM agentic (model calls tools)`
+```
+OPENAI_API_KEY=<Gemini API key>
+OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+OPENAI_COMPLETIONS_PATH=/chat/completions
+AGENT_LLM_MODE=llm
+AGENT_LLM_ORCHESTRATION=agentic
+AGENT_LLM_REASONING_EFFORT=low
+OPENAI_MODEL=gemini-3.6-flash
+AGENT_LLM_FALLBACK_MODELS=gemini-3.5-flash
+AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS=30
+```
+
+| Mode | When the model is busy (503) | When it is slow or fails |
+|---|---|---|
+| Deterministic | No model call | No model call |
+| LLM mode (single-pass) | One call to the backup | Past the 15 s synthesis cap, or any other error: the deterministic draft |
+| Agent planner | The call goes to the backup and stays there for 60 s | A 30 s timeout or other error: `AGENTIC_FALLBACK`, the deterministic answer |
 
 In every LLM mode, 3 failed calls in a row (every model busy, or timeouts) open the circuit breaker: for 60 s turns skip the model and return the deterministic answer straight away (`LLM_CIRCUIT_OPEN` in the trace).
 

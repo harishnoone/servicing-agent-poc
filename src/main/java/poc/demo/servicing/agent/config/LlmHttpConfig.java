@@ -35,7 +35,7 @@ public class LlmHttpConfig {
     @Order(1)
     RestClientCustomizer llmTimeoutCustomizer(
             @Value("${agent.llm.http-connect-timeout-seconds:5}") int connectSeconds,
-            @Value("${agent.llm.http-read-timeout-seconds:15}") int readSeconds) {
+            @Value("${agent.llm.http-read-timeout-seconds:30}") int readSeconds) {
         HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(connectSeconds)).build();
         return builder -> {
             JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(client);

@@ -57,7 +57,7 @@ LAYER 2: SPRING BOOT 3.x MICROSERVICE (JDK 21 Virtual Threads / Project Loom)
 
 ## 2. End-to-End Sequence Diagram (Live CDC Mutation + Agent Resolution)
 
-> **All tested scenarios:** [`docs/scenarios.mmd`](scenarios.mmd) is one sequence diagram covering scenarios 1 to 12 (`scripts/scenarios/`), including the Kafka actions (FR-9), the three operating modes, the investigation and ticket status. The diagram below is the original core flow. Since FR-9 the agent no longer writes the warehouse: approvals and escalations go to `agent.actions.*` and the system of record applies them (§4.10). View the `.mmd` with mermaid.live, the VS Code Mermaid extension, or `npx @mermaid-js/mermaid-cli@10 -i docs/scenarios.mmd -o docs/scenarios.svg` (version 11 needs Node 18+).
+> **All tested scenarios:** [`docs/scenarios.mmd`](scenarios.mmd) is one sequence diagram covering scenarios 1 to 12 (`scripts/scenarios/`), including the Kafka actions (FR-9), the three operating modes, the investigation and ticket status. The diagram below is the core flow; Phase C shows how an approval becomes a Kafka action that the system of record applies (FR-9, §4.10). View the `.mmd` with mermaid.live, the VS Code Mermaid extension, or `npx @mermaid-js/mermaid-cli@10 -i docs/scenarios.mmd -o docs/scenarios.svg` (version 11 needs Node 18+).
 
 ```mermaid
 sequenceDiagram
@@ -74,6 +74,8 @@ sequenceDiagram
   participant CustomerTools as CustomerContextTools
   participant Rules as DeterministicRulesTools
   participant HybridRAG as KnowledgeRetrievalTools
+  participant ActionPub as ActionPublisher
+  participant SoR as SystemOfRecordWriter (downstream)
 
   Note over Presenter, Redis: Phase A: Real-Time Warehouse Mutation & CDC Sync
   Presenter->>DemoCtrl: POST /api/demo/mutate (Insert $45 late_fee for cust_123)
@@ -107,9 +109,24 @@ sequenceDiagram
   HybridRAG-->>SpringAI: Chunk [billing_waivers_policy.md#sec-4.2] (Authority: CANONICAL)
   SpringAI->>Rules: @Tool evaluateWaiverRules("cust_123", 45.00)
   Rules-->>SpringAI: WaiverResult(eligible=true, reason="APPROVED", ref="sec-4.2")
+  Rules->>ActionPub: publish waiver action (Java only, after APPROVED)
+  ActionPub->>Kafka: agent.actions.waiver (key cust_123, actionId, log "Action produced")
   SpringAI-->>AgentCtrl: Grounded Final Response + Citations
   AgentCtrl->>AgentCtrl: Record KPI Telemetry (Deflected=true, Latency=410ms)
   AgentCtrl-->>Presenter: 200 OK (AgentTurnReport JSON with full agentReasoningTrace)
+
+  Note over Kafka, SoR: Phase C: Action applied downstream (FR-9). The app never writes the warehouse
+  Kafka->>SoR: consume agent.actions.waiver (group system-of-record)
+  alt New actionId
+    SoR->>PG: one transaction: applied_actions + invoice WAIVED + waivers_used_12m + 1 + audit_log row
+  else Repeated actionId (retry, double click)
+    SoR-->>Kafka: DUPLICATE_SKIPPED (no write)
+  end
+  PG-->>Debezium: WAL events for billing_ledger and customers
+  Debezium->>Kafka: db.public.billing_ledger, db.public.customers
+  Kafka->>Consumer: Consume CDC Events
+  Consumer->>Redis: customer:profile:cust_123 (invoice WAIVED, waivers 1)
+  Note over Kafka, SoR: Escalations follow the same path: agent.actions.escalation -> audit ESCALATION_HANDOFF. Supervisor overrides publish the same waiver action (API returns ACCEPTED + actionId)
 ```
 
 ---
@@ -248,6 +265,10 @@ servicing-agent-poc/
 │   │   └── KpiMetricsService.java      # Deflection, AHT saved, compliance, cache misses, DLT depth
 │   ├── dlt/
 │   │   └── DltService.java             # DLT depth, inspection, replay
+│   ├── actions/
+│   │   └── ActionPublisher.java         # Publishes agent.actions.* events (FR-9); never writes the warehouse
+│   ├── downstream/
+│   │   └── SystemOfRecordWriter.java    # Stand-in system of record: applies actions once, writes audit_log
 │   ├── admin/
 │   │   ├── AdminOverrideService.java   # Supervisor waiver override (warehouse + audit, one transaction)
 │   │   └── AuditService.java           # Append-only audit_log writes
@@ -289,7 +310,7 @@ public record WaiverEvaluationResult(
 ```
 
 - Enforces exact numeric and policy checks in pure Java before the LLM formulates its response, eliminating hallucinated approvals or prompt-injection bypasses.
-- An `APPROVED` result writes a `WAIVER_APPROVED_AUTONOMOUS` row to `audit_log` (the auditable action event; no write-back to billing, per scope).
+- An `APPROVED` result publishes a `waiver` action to `agent.actions.waiver` (FR-9). The downstream system of record applies it once: invoice `WAIVED`, `waivers_used_12m` + 1 and a `WAIVER_APPROVED_AUTONOMOUS` row in `audit_log`; CDC brings the change back to Redis. The rules engine never writes the warehouse (§4.10).
 - Output verification in the controller counts a compliance violation when the response cites an id no tool returned, gives no citation although retrieval returned confident (≥ 0.72) results, or claims an approval without an `APPROVED` rule result.
 
 ### 4.4 Structured Output Report (`AgentTurnReport.java`)
@@ -411,7 +432,7 @@ Demo: `scripts/demo.ps1 caching [customerId] [turns]` (and `demo.sh caching`) se
 2. `SingleCallSynthesizer` makes exactly one model call through `synthesisChatClient` (no tools registered). The system message is the static synthesis prefix; the user message holds the verified facts, retrieved snippets (id, authority, superseded flag, content up to 700 characters) and the draft. Options: `max_tokens` 1024, `reasoning_effort` from `AGENT_LLM_REASONING_EFFORT` (`low` for Gemini; empty for `gpt-4o`, which rejects it).
 3. The call runs on a virtual thread with a hard timeout (`agent.llm.synthesis.timeout-ms`, 8 s). Request attributes and MDC are propagated, so the round trip still appears in the trace and logs.
 4. `AgentChatController.runSinglePass` accepts the rewrite only if every cited id was retrieved, the draft's citations were not all dropped, and it does not claim an approval without an `APPROVED` rule result. A reply cut off by `max_tokens` (`finish_reason=length`) is also discarded. Otherwise the deterministic draft is returned and the trace says why (`LLM_SYNTHESIS_REJECTED (...)`, `LLM_SYNTHESIS_TIMEOUT`, `LLM_SYNTHESIS_TRUNCATED`, `LLM_SYNTHESIS_FAILED`). A provider failure therefore never produces `PARTIAL`.
-5. The synthesis prompt forbids claiming a bill or ledger change (an autonomous approval only writes `audit_log`) and adding ticket details that are not in the facts. Added after a live reply said the waiver was "recorded in your billing ledger".
+5. The synthesis prompt forbids claiming a bill or ledger change (the waiver is applied downstream and asynchronously through `agent.actions.waiver`, so the reply must not say the bill already changed) and adding ticket details that are not in the facts. Added after a live reply said the waiver was "recorded in your billing ledger".
 
 **Trade-off:** single-pass gives up model-driven tool planning (FR-3.1) for a fixed keyword plan. That plan is the one already tested across all 11 seeded scenarios. In exchange, escalation becomes deterministic: in one agentic run on Pro, the model skipped `escalateWithSummary` for Marcus's SLA breach, and in an agentic run on Flash-Lite it escalated Jordan's clean tier denial. `agentic` stays available for comparison and for open-ended questions the keyword plan does not cover.
 
@@ -613,7 +634,7 @@ Virtual Threads provide the concurrency benefits of reactive I/O (no platform th
 ### 7.1 OAuth2 / OIDC RBAC & Human-in-the-Loop (`AdminOverrideController`)
 
 - **Spring Security OAuth2 Resource Server:** Validates JWT bearer tokens from corporate IdPs when `OAUTH2_ISSUER_URI` is set (issuer metadata resolved on first token, so startup does not depend on the IdP). Customer chat endpoints require `SCOPE_customer.chat`, while `/api/admin/**` enforces `@PreAuthorize("!@adminAccess.jwtEnabled() or hasAuthority('SCOPE_servicing.supervisor')")` (the scope check applies whenever an issuer is configured). `/api/demo/**`, Swagger and health stay open in JWT mode for the demo. Without an issuer (local demo) all endpoints are open and overrides are audited as `demo-mode-no-idp`.
-- **Discretionary Policy Overrides (`POST /api/admin/overrides/waiver`):** Enables supervisors to approve out-of-policy credits (e.g., > $50.00). In one transaction: marks the invoice `WAIVED`, increments `waivers_used_12m`, and appends an immutable `audit_log` row (JWT `sub`, customer, invoice, amount, justification, timestamp). Redis is patched immediately and converges with the CDC event.
+- **Discretionary Policy Overrides (`POST /api/admin/overrides/waiver`):** Enables supervisors to approve out-of-policy credits (e.g., > $50.00). The API validates with reads and publishes a `waiver` action (`agent.actions.waiver`, actor = JWT `sub`, justification), returning `status: ACCEPTED` with the `actionId`. The downstream system of record applies it once in one transaction: invoice `WAIVED`, `waivers_used_12m` + 1, and an immutable `audit_log` row (`WAIVER_OVERRIDE`, supervisor `sub`, customer, invoice, amount, justification). The change reaches Redis through CDC; repeating the same override returns the same `actionId` and is skipped (FR-9.3, §4.10). In production this API sits behind a proxy and holds no write credentials.
 - **Dead Letter Topic Replay (`POST /api/admin/kafka/dlt/replay`):** Allows authorized operators to inspect poison-pill headers in `*.DLT` topics and safely re-publish corrected payloads. Only the three CDC dead-letter topics are accepted.
 
 ### 7.2 Production Cloud Deployment (AWS EKS Defense-in-Depth)
@@ -692,7 +713,7 @@ Status as of 2026-11-21. "Verified" means a test or live check asserts the requi
 3. Decide whether FR-4.2's metadata pre-filter is still required; if so, tag policies by tier.
 4. Measure WAL→Kafka latency (FR-1.1) and P95 turn latency under load (KPI table).
 5. Optional: a CI step or editor hook that runs `mvnw test` when a `*Tools.java` file changes.
-6. Autonomous waiver approvals are written to `audit_log` only. `requirements.md` §5 says the approval is "recorded in the operational state store"; Redis is not updated on an autonomous approval (supervisor overrides do update it).
+6. Resolved 2026-11-24 (FR-9): autonomous approvals and supervisor overrides are published as Kafka actions and applied by the downstream system of record (invoice `WAIVED`, waiver count, audit row), and the result reaches Redis through CDC. Remaining: the system of record runs in the app container; in production it is a separate service with its own write credentials.
 7. `/api/demo/**` is open even in JWT mode; remove or protect it outside a demo.
 8. Prompt caching (FR-3.5 to FR-3.7) savings are unmeasured: Gemini does not report cached tokens and OpenAI was not run. Run the A/B comparison on OpenAI, or read Gemini's native usage metadata (§4.6).
 9. No server-side throttle (bulkhead) around the model call; only client pacing and bounded retries (FR-3.9).
@@ -772,5 +793,6 @@ The decision model sits only on the routing and grading edges. Eligibility, waiv
 | 2026-11-23 | Implementation | FR-6.5 ticket status inquiry; agent planner mode now enforces the escalation check when the model skips it (found live: "What is my status?" left a breached ticket unescalated). §8 row, 93 tests, scenario 12. Affects Slides 5, 8 |
 | 2026-11-24 | Implementation | §4.10 actions through Kafka (FR-9): ActionPublisher, SystemOfRecordWriter, admin override publishes only, app read-only on source data. Affects Slides 4, 5, 7 |
 | 2026-11-24 | Implementation | §4.6a cost telemetry: Turn cost log fields and KPI totals (llmEstimatedCostUsd, llmCostIfPrefixCachedUsd, projectedCachingSavingPercent); scenario 3 and smoke check the escalation action. Affects Slides 3, 5 |
+| 2026-11-24 | Docs | Actions only: §2 sequence diagram gains Phase C (waiver action -> system of record -> CDC; escalations and overrides on the same path); §4.3 approval, §7.1 supervisor override, package tree (actions/, downstream/) and known gap 6 updated for FR-9 |
 
 > **How to use this changelog:** Add a row for every architectural decision — component swaps, new tools added to the agent, latency target adjustments, schema changes. Reference the slide number it affects so the deck stays in sync.

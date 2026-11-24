@@ -152,7 +152,7 @@ Or run one scenario at a time, so you can pick what to show (each prints its tra
 | 7 | Poison pill, retries, dead-letter topic |
 | 8 | Supervisor override and append-only audit (changes data) |
 | 9 | KPI report |
-| 10 | Prompt caching (live LLM only; reports SKIPPED offline): one model call per turn, same static prefix across turns and customers |
+| 10 | Prompt caching (live LLM only; reports SKIPPED offline): same static prefix on every model call, across turns and customers; one call per turn in LLM mode, several in agent planner mode |
 | 11 | Multi-step billing investigation (Riley): billing, tickets, waiver rules, SLA policy, then fact verification |
 | 12 | Ticket status inquiry: Elena's ticket within SLA (answered), Marcus's TKT-8841 past SLA (escalated), and a vague "what is my status?" still escalates |
 

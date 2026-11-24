@@ -10,6 +10,7 @@ Per-requirement status lives in `docs/design.md` §8; spec-level history is in t
 - **Ticket status inquiry (FR-6.5).** "What's the status of my ticket?", "any update on my ticket" or a ticket id now lists the customer's open tickets (or the named one) with subject, status and SLA time left or hours breached; a breached ticket escalates. Scenario `scripts/scenarios/12-ticket-status.ps1` (Elena within SLA, Marcus past SLA, vague question). Passed offline and in live agent planner mode. Tests: 93.
 
 ### Fixed
+- **Scenario 10 failed in agent planner mode.** It required exactly one model call per turn, which only holds in LLM mode; agent planner mode makes several (3 per turn on Gemini). The check now depends on the mode; the caching checks (same prefix on every call, usage reported) are unchanged. Passed in agent planner mode.
 - **Agent planner mode could skip escalation.** Live, the model answered Marcus's "What is my status?" without calling `escalateWithSummary`, so a breached ticket was not escalated. Java now runs the escalation check after every agentic turn in which the model did not (`AGENTIC_ESCALATION_ENFORCED` in the trace).
 
 ### Fixed

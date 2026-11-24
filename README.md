@@ -237,7 +237,11 @@ OPENAI_COMPLETIONS_PATH=/chat/completions
 OPENAI_MODEL=gemini-3.1-flash-lite
 AGENT_LLM_MODE=llm
 AGENT_LLM_REASONING_EFFORT=low
+# Optional backup model, used only when OPENAI_MODEL returns HTTP 503 (busy). Must differ from OPENAI_MODEL.
+# AGENT_LLM_FALLBACK_MODELS=<another Gemini Flash model>
 ```
+
+**Backup model on 503** (`AGENT_LLM_FALLBACK_MODELS`, comma-separated, empty = off): when the configured model answers HTTP 503 (`high demand`), the call is retried once on each backup in order, and the trace shows `LLM_MODEL_FALLBACK: <model> -> <backup> (HTTP 503)`. Timeouts, 429s and other errors never switch models; the circuit breaker handles those. After a backup answers, calls stay on it for `AGENT_LLM_FALLBACK_STICKY_SECONDS` (default 60), then try the configured model again. Pick a backup from the same family; an entry equal to `OPENAI_MODEL` is ignored. Gemini 3 Flash models work as backups in agentic mode because tool-call thought signatures are kept across the switch.
 
 **OpenAI:** `OPENAI_API_KEY=sk-...` (model defaults to `gpt-4o`). Leave `AGENT_LLM_REASONING_EFFORT` empty, because `gpt-4o` rejects it. Not yet run end to end.
 
@@ -350,7 +354,7 @@ Requirement ids in code comments (e.g. `FR-3.8`) refer to `docs/requirements.md`
 
 ## Known limitations
 
-- **Model provider outages.** Live modes depend on the provider. On repeated 503s or timeouts a circuit breaker (3 failures, 60 s) skips the model and the turn returns the deterministic answer, so the demo keeps working with templated wording. Tune with `AGENT_LLM_CIRCUIT_*`, `AGENT_LLM_RETRY_MAX_ATTEMPTS` and `AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS`.
+- **Model provider outages.** Live modes depend on the provider. On repeated 503s or timeouts a circuit breaker (3 failures, 60 s) skips the model and the turn returns the deterministic answer, so the demo keeps working with templated wording. With `AGENT_LLM_FALLBACK_MODELS` set, a 503 first switches to a backup model, and the breaker counts a failure only when every model is busy. Tune with `AGENT_LLM_CIRCUIT_*`, `AGENT_LLM_FALLBACK_*`, `AGENT_LLM_RETRY_MAX_ATTEMPTS` and `AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS`.
 - The LLM path has been run against Gemini only, not OpenAI.
 - With a model in the loop a turn takes about 1.5 to 5 s in LLM mode and 4 to 47 s in agent planner mode (provider load varies); the <1.5 s P95 target is met only by deterministic mode (2 to 65 ms). Streaming the reply is the next step.
 - Prompt-caching savings are estimated, not measured: Gemini's OpenAI-compatible endpoint does not report cached tokens, so `projectedCachingSavingPercent` is a ceiling, and the default prices are placeholders.

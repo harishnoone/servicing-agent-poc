@@ -113,6 +113,7 @@ services:
       SPRING_AI_OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com}            # Gemini: https://generativelanguage.googleapis.com/v1beta/openai
       SPRING_AI_OPENAI_CHAT_COMPLETIONS_PATH: ${OPENAI_COMPLETIONS_PATH:-/v1/chat/completions}   # Gemini: /chat/completions
       SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      AGENT_LLM_FALLBACK_MODELS: ${AGENT_LLM_FALLBACK_MODELS:-}   # backup models on HTTP 503; empty = off
 ```
 
 ### Key Design Decisions in This Compose File

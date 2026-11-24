@@ -102,6 +102,12 @@ agent:
     circuit:
       failure-threshold: ${AGENT_LLM_CIRCUIT_FAILURE_THRESHOLD:3}
       open-seconds: ${AGENT_LLM_CIRCUIT_OPEN_SECONDS:60}
+    # Backup models, comma-separated, tried in order when the configured model returns HTTP 503 (busy).
+    # Timeouts and other errors do not switch models. After a backup answers it is used for sticky-seconds.
+    # Empty (default) turns the feature off.
+    fallback:
+      models: ${AGENT_LLM_FALLBACK_MODELS:}
+      sticky-seconds: ${AGENT_LLM_FALLBACK_STICKY_SECONDS:60}
     synthesis:
       # Hard cap on the single model call. On timeout or error the deterministic draft is returned instead.
       timeout-ms: ${AGENT_LLM_SYNTHESIS_TIMEOUT_MS:8000}

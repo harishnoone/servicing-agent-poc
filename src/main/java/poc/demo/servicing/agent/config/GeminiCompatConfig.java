@@ -7,6 +7,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.boot.web.client.RestClientCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 
 /**
  * Registers {@link GeminiThoughtSignatureInterceptor} on the RestClient Spring AI uses, only when the
@@ -18,7 +19,9 @@ public class GeminiCompatConfig {
 
     private static final Logger log = LoggerFactory.getLogger(GeminiCompatConfig.class);
 
+    /** Runs after call logging (order 0) and before the model fallback (order 3); see LlmHttpConfig. */
     @Bean
+    @Order(2)
     RestClientCustomizer geminiThoughtSignatureCustomizer(ObjectMapper mapper) {
         log.info("Gemini endpoint detected: tool-call thought signatures will be round-tripped");
         GeminiThoughtSignatureInterceptor interceptor = new GeminiThoughtSignatureInterceptor(mapper);

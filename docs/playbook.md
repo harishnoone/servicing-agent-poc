@@ -43,6 +43,8 @@ After `seed`, eight more customers are available for audience questions (`cust_2
 
 ## 2. Demo script
 
+The flow of every scenario below is drawn in [`scenarios.mmd`](scenarios.mmd), useful as a backup slide.
+
 Every step below is also a standalone script in `scripts/scenarios/`, so you can pick steps during the demo: `.\scripts\scenarios\run.ps1` shows a menu, `run.ps1 5` runs one, `run.ps1 2 3 5` runs several in order. Each script prints the trace and reply and ends with `SCENARIO PASSED` or the failed checks. `scripts/demo-smoke.ps1` stays the full end-to-end run. Scenario 8 (supervisor override) changes data; run it last or reset after.
 
 | # | Script | Section |

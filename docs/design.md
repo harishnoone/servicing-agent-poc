@@ -57,6 +57,8 @@ LAYER 2: SPRING BOOT 3.x MICROSERVICE (JDK 21 Virtual Threads / Project Loom)
 
 ## 2. End-to-End Sequence Diagram (Live CDC Mutation + Agent Resolution)
 
+> **All tested scenarios:** [`docs/scenarios.mmd`](scenarios.mmd) is one sequence diagram covering scenarios 1 to 12 (`scripts/scenarios/`), including the Kafka actions (FR-9), the three operating modes, the investigation and ticket status. The diagram below is the original core flow. Since FR-9 the agent no longer writes the warehouse: approvals and escalations go to `agent.actions.*` and the system of record applies them (§4.10). View the `.mmd` with mermaid.live, the VS Code Mermaid extension, or `npx @mermaid-js/mermaid-cli@10 -i docs/scenarios.mmd -o docs/scenarios.svg` (version 11 needs Node 18+).
+
 ```mermaid
 sequenceDiagram
   autonumber

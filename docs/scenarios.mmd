@@ -1,0 +1,125 @@
+%% Servicing Agent POC: sequence of every tested demo scenario (scripts/scenarios/01-12, demo-smoke.ps1).
+%% Render: GitHub previews .mmd in Markdown only, so view with https://mermaid.live, the VS Code Mermaid
+%% extension, or `npx @mermaid-js/mermaid-cli -i docs/scenarios.mmd -o docs/scenarios.svg`.
+%% Source data is read-only for the app (FR-9): every write goes Agent -> Kafka action -> System of record.
+sequenceDiagram
+  autonumber
+  actor Cust as Customer (chat client)
+  actor Sup as Supervisor (admin API)
+  participant Agent as AgentChatController + Java plan
+  participant LLM as LLM (Gemini Flash-Lite)
+  participant Tools as Tools (rules, retrieval, tickets, escalation)
+  participant Redis as Redis L1 profile
+  participant Kafka as Kafka
+  participant SoR as System of record (downstream writer)
+  participant PG as Warehouse (Postgres)
+  participant CDC as Debezium + CDC consumer
+
+  rect rgb(235, 245, 255)
+    Note over Cust,CDC: 1. Live CDC mutation (Elena)
+    PG->>CDC: new LATE_FEE row (WAL)
+    CDC->>Kafka: db.public.billing_ledger
+    Kafka->>CDC: IdempotentKafkaConsumer (dedup + per-row LSN guard)
+    CDC->>Redis: profile updated, log CDC applied
+  end
+
+  rect rgb(235, 255, 240)
+    Note over Cust,CDC: 2. Autonomous waiver (Elena) - action applied downstream
+    Cust->>Agent: Why is my bill 45 higher, can you waive it?
+    Agent->>Redis: getCustomerState
+    Agent->>Tools: evaluateWaiverRules = APPROVED (Java)
+    Tools->>Kafka: agent.actions.waiver (Action produced)
+    Kafka->>SoR: consume once (applied_actions)
+    SoR->>PG: invoice WAIVED, waivers +1, audit WAIVER_APPROVED_AUTONOMOUS
+    PG->>CDC: change captured
+    CDC->>Redis: invoice WAIVED
+    Agent-->>Cust: approved, cites billing_waivers_policy sec-4.2
+  end
+
+  rect rgb(255, 245, 235)
+    Note over Cust,CDC: 3. ERR-504-GW conflict + SLA escalation (Marcus)
+    Cust->>Agent: My gateway is throwing ERR-504-GW
+    Agent->>Tools: searchPoliciesAndCases (2026 guide beats superseded 2024 case)
+    Agent->>Tools: escalateWithSummary = SLA_BREACH, handoff card
+    Tools->>Kafka: agent.actions.escalation
+    Kafka->>SoR: audit ESCALATION_HANDOFF
+    Agent-->>Cust: canonical fix cited, legacy advice flagged, escalated
+  end
+
+  rect rgb(250, 240, 255)
+    Note over Cust,CDC: 4. Clean denials (Jordan tier, Marcus waiver limit)
+    Cust->>Agent: Can you waive my late fee?
+    Agent->>Tools: evaluateWaiverRules = TIER_INELIGIBLE or WAIVER_LIMIT_REACHED
+    Note right of Tools: no action published
+    Agent-->>Cust: denied with policy reason
+  end
+
+  rect rgb(240, 250, 250)
+    Note over Cust,CDC: 5. Same problem again - no duplicate ticket (Marcus)
+    Cust->>Agent: still getting ERR-504-GW, any update?
+    Agent->>Tools: findMatchingOpenTicket = EXISTING_TICKET TKT-8841
+    Agent-->>Cust: follow-up on TKT-8841, no new ticket
+    Cust->>Agent: POST /api/demo/tickets same problem
+    Agent->>PG: read open tickets (row lock)
+    Agent-->>Cust: duplicate true, existing TKT-8841
+  end
+
+  rect rgb(245, 245, 245)
+    Note over Cust,CDC: 6. Dormant account - cache miss (Elena)
+    Cust->>Agent: What is my latest charge?
+    Agent->>Redis: miss or stub profile
+    Agent->>PG: bounded point lookups (read only)
+    Agent->>Redis: async re-hydrate (SET NX)
+    Agent-->>Cust: answered in milliseconds
+  end
+
+  rect rgb(255, 240, 240)
+    Note over Cust,CDC: 7. Poison pill - retries - DLT
+    Kafka->>CDC: unparseable record
+    CDC->>Kafka: retry 1s, 2s, 4s then db.public.customers.DLT
+    Note right of CDC: healthy events keep flowing
+  end
+
+  rect rgb(235, 255, 240)
+    Note over Cust,CDC: 8. Supervisor override - action, idempotent
+    Sup->>Agent: POST /api/admin/overrides/waiver
+    Agent->>PG: validate (reads only)
+    Agent->>Kafka: agent.actions.waiver
+    Agent-->>Sup: ACCEPTED + actionId
+    Kafka->>SoR: apply once, audit WAIVER_OVERRIDE
+    SoR->>PG: invoice WAIVED
+    Sup->>Agent: same override again
+    Agent-->>Sup: same actionId, SoR skips duplicate
+  end
+
+  rect rgb(255, 255, 235)
+    Note over Cust,CDC: 9 and 10. KPIs and prompt caching (live LLM)
+    Cust->>Agent: GET /api/agent/reports/kpis
+    Agent-->>Cust: deflection, AHT, compliance, DLT, tokens, est. cost, projected caching saving
+    Agent->>LLM: same static prefix on every call (one call in LLM mode, several in agent planner)
+    Note right of LLM: Turn cost log per turn
+  end
+
+  rect rgb(240, 245, 255)
+    Note over Cust,CDC: 11. Multi-step billing investigation (Riley)
+    Cust->>Agent: Why is my bill so high this month?
+    alt Deterministic or LLM mode (Java plans)
+      Agent->>Tools: 1 billing, 2 tickets, 3 checkWaiverEligibility (not applied), 4 SLA policy
+      Agent->>Agent: 5 verify amounts, invoices, tickets, citations
+      Agent->>LLM: LLM mode only - word the verified draft
+    else Agent planner mode (LLM plans)
+      Agent->>LLM: plan
+      LLM->>Tools: getCustomerState, findMatchingOpenTicket, checkEligibility, searchPoliciesAndCases
+      Agent->>Agent: AGENTIC_VERIFIED or fallback to the deterministic answer
+    end
+    Agent-->>Cust: 180 overage + 35 late fee, waivable, SLA credit for the outage
+  end
+
+  rect rgb(250, 245, 235)
+    Note over Cust,CDC: 12. Ticket status inquiry (Elena within SLA, Marcus past SLA)
+    Cust->>Agent: Any news on TKT-8841?
+    Agent->>Redis: tickets with SLA deadline
+    Agent->>Tools: escalateWithSummary (Java enforces it if the model skipped it)
+    Tools->>Kafka: agent.actions.escalation when breached
+    Agent-->>Cust: status, SLA time left or hours breached
+  end

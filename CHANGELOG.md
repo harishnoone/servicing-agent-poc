@@ -7,6 +7,7 @@ Per-requirement status lives in `docs/design.md` §8; spec-level history is in t
 ## [Unreleased]
 
 ### Added
+- `docs/scenarios.mmd`: one Mermaid sequence diagram of all 12 tested scenarios (CDC, waiver action, escalation action, denials, duplicate ticket, cache miss, DLT, supervisor override, KPIs and caching, investigation in Java-planned and agent planner modes, ticket status). Linked from README, `design.md` §2 and the playbook. Renders with mermaid-cli 10.
 - **Actions through Kafka; the app no longer writes source data (FR-9).** Approved waivers and escalations are published as action events (`agent.actions.waiver`, `agent.actions.escalation`; `ticket-note` and `sla-credit` reserved) with content-derived ids and an `Action produced: ... payload={...}` log line. A downstream `SystemOfRecordWriter` (consumer group `system-of-record`) applies each action once (`applied_actions`) and writes the audit row; CDC brings the result back. An approved waiver now really waives the invoice and counts against the 12-month limit.
 
 - **Cost on the KPI endpoint.** `GET /api/agent/reports/kpis` adds `llmEstimatedCostUsd`, `llmCostIfPrefixCachedUsd` and `projectedCachingSavingPercent`, the running totals of the `Turn cost:` lines. Live agent planner turn: est. `$0.001364`, 35.87% projected saving. README and `design.md` §4.6a document every field.

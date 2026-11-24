@@ -333,6 +333,7 @@ Details: [`docs/requirements.md`](docs/requirements.md) §6, [`docs/design.md`](
 | [`docs/design.md`](docs/design.md) | Architecture, data model, design decisions and the LLM model comparison; §8 maps every requirement to its code and test |
 | [`docs/infrastructure.md`](docs/infrastructure.md) | Container topology and configuration |
 | [`docs/playbook.md`](docs/playbook.md) | Demo runbook, live-LLM setup, rate-limit handling, troubleshooting |
+| [`docs/scenarios.mmd`](docs/scenarios.mmd) | Sequence diagram of every tested demo scenario (1 to 12), including Kafka actions and the three modes |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release notes |
 
 Requirement ids in code comments (e.g. `FR-3.8`) refer to `docs/requirements.md`.

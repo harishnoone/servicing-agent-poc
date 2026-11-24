@@ -2,6 +2,7 @@ package poc.demo.servicing.agent.controller;
 
 import poc.demo.servicing.agent.dlt.DltService;
 import poc.demo.servicing.agent.guardrails.PiiSanitizer;
+import poc.demo.servicing.agent.llm.LlmCircuitBreaker;
 import poc.demo.servicing.agent.llm.SingleCallSynthesizer;
 import poc.demo.servicing.agent.model.AgentTurnReport;
 import poc.demo.servicing.agent.model.CustomerProfile;
@@ -68,6 +69,7 @@ public class AgentChatController {
     private final CacheUsageRecorder cacheUsage;
     private final SingleCallSynthesizer synthesizer;
     private final TurnCostEstimator costEstimator;
+    private final LlmCircuitBreaker circuitBreaker;
     private final boolean replayMode;
     private final boolean singlePass;
     private final double ahtSavedMinutes;
@@ -85,6 +87,7 @@ public class AgentChatController {
             CacheUsageRecorder cacheUsage,
             SingleCallSynthesizer synthesizer,
             TurnCostEstimator costEstimator,
+            LlmCircuitBreaker circuitBreaker,
             @Value("${agent.llm.orchestration:single-pass}") String orchestration,
             @Value("${agent.llm.mode:auto}") String llmMode,
             @Value("${spring.ai.openai.api-key:}") String apiKey,
@@ -101,6 +104,7 @@ public class AgentChatController {
         this.cacheUsage = cacheUsage;
         this.synthesizer = synthesizer;
         this.costEstimator = costEstimator;
+        this.circuitBreaker = circuitBreaker;
         this.singlePass = !"agentic".equalsIgnoreCase(orchestration);
         this.replayMode = resolveReplay(llmMode, apiKey);
         this.ahtSavedMinutes = ahtSavedMinutes;
@@ -148,6 +152,10 @@ public class AgentChatController {
         boolean failed = false;
         try {
             if (replayMode) {
+                response = replayAgent.respond(request.customerId(), sanitized);
+            } else if (!singlePass && !circuitBreaker.allowRequest()) {
+                // Provider is failing: skip the model instead of waiting for retries and timeouts.
+                trace.record("LLM_CIRCUIT_OPEN: deterministic answer returned");
                 response = replayAgent.respond(request.customerId(), sanitized);
             } else if (singlePass) {
                 response = runSinglePass(request.customerId(), sessionId, sanitized);

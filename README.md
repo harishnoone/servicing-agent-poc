@@ -350,6 +350,7 @@ Requirement ids in code comments (e.g. `FR-3.8`) refer to `docs/requirements.md`
 
 ## Known limitations
 
+- **Model provider outages.** Live modes depend on the provider. On repeated 503s or timeouts a circuit breaker (3 failures, 60 s) skips the model and the turn returns the deterministic answer, so the demo keeps working with templated wording. Tune with `AGENT_LLM_CIRCUIT_*`, `AGENT_LLM_RETRY_MAX_ATTEMPTS` and `AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS`.
 - The LLM path has been run against Gemini only, not OpenAI.
 - With a model in the loop a turn takes about 1.5 to 5 s in LLM mode and 4 to 47 s in agent planner mode (provider load varies); the <1.5 s P95 target is met only by deterministic mode (2 to 65 ms). Streaming the reply is the next step.
 - Prompt-caching savings are estimated, not measured: Gemini's OpenAI-compatible endpoint does not report cached tokens, so `projectedCachingSavingPercent` is a ceiling, and the default prices are placeholders.

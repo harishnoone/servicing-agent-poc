@@ -2,6 +2,7 @@ package poc.demo.servicing.agent.config;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import poc.demo.servicing.agent.llm.LlmCircuitBreaker;
 import poc.demo.servicing.agent.telemetry.TraceCollector;
 import poc.demo.servicing.agent.telemetry.TurnState;
 import org.slf4j.Logger;
@@ -33,12 +34,14 @@ public class LlmCallLoggingInterceptor implements ClientHttpRequestInterceptor {
     private final ObjectMapper mapper;
     private final ObjectProvider<TraceCollector> trace;
     private final ObjectProvider<TurnState> turnState;
+    private final LlmCircuitBreaker breaker;
 
     public LlmCallLoggingInterceptor(ObjectMapper mapper, ObjectProvider<TraceCollector> trace,
-                                     ObjectProvider<TurnState> turnState) {
+                                     ObjectProvider<TurnState> turnState, LlmCircuitBreaker breaker) {
         this.mapper = mapper;
         this.trace = trace;
         this.turnState = turnState;
+        this.breaker = breaker;
     }
 
     @Override
@@ -53,9 +56,15 @@ public class LlmCallLoggingInterceptor implements ClientHttpRequestInterceptor {
             response = execution.execute(request, body);
         } catch (IOException e) {
             finish(start, "IO_ERROR " + e.getClass().getSimpleName(), null);
+            breaker.recordFailure(e.getClass().getSimpleName());
             throw e;
         }
         int status = response.getStatusCode().value();
+        if (status == 200) {
+            breaker.recordSuccess();
+        } else if (status == 429 || status >= 500) {
+            breaker.recordFailure("HTTP " + status);
+        }
         byte[] responseBody = response.getBody().readAllBytes();
         finish(start, "HTTP " + status, status == 200 ? usage(responseBody) : errorSummary(responseBody));
         if (status == 200 && RequestContextHolder.getRequestAttributes() != null) {

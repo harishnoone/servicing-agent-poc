@@ -39,6 +39,7 @@ public class SingleCallSynthesizer {
     private final TurnState turnState;
     private final TraceCollector trace;
     private final CacheUsageRecorder cacheUsage;
+    private final LlmCircuitBreaker circuitBreaker;
     private final long timeoutMs;
     private final int maxTokens;
     private final String reasoningEffort;
@@ -49,6 +50,7 @@ public class SingleCallSynthesizer {
             TurnState turnState,
             TraceCollector trace,
             CacheUsageRecorder cacheUsage,
+            LlmCircuitBreaker circuitBreaker,
             @Value("${agent.llm.synthesis.timeout-ms:8000}") long timeoutMs,
             @Value("${agent.llm.synthesis.max-tokens:1024}") int maxTokens,
             @Value("${agent.llm.synthesis.reasoning-effort:}") String reasoningEffort) {
@@ -56,6 +58,7 @@ public class SingleCallSynthesizer {
         this.turnState = turnState;
         this.trace = trace;
         this.cacheUsage = cacheUsage;
+        this.circuitBreaker = circuitBreaker;
         this.timeoutMs = timeoutMs;
         this.maxTokens = maxTokens;
         this.reasoningEffort = reasoningEffort == null ? "" : reasoningEffort.strip();
@@ -63,6 +66,10 @@ public class SingleCallSynthesizer {
 
     /** @return the model's reply, or {@code null} if it failed or exceeded the timeout */
     public String rewrite(CustomerProfile profile, String sessionId, String message, String draft) {
+        if (!circuitBreaker.allowRequest()) {
+            trace.record("LLM_CIRCUIT_OPEN: model call skipped");
+            return null;
+        }
         String facts = facts(profile, sessionId, message, draft);
         RequestAttributes attrs = RequestContextHolder.getRequestAttributes();
         Map<String, String> mdc = MDC.getCopyOfContextMap();

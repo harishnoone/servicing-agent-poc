@@ -43,12 +43,13 @@ spring:
   ai:
     retry:
       # Bounded retry for provider rate limits (HTTP 429) and brief outages (503). The Spring AI default is
-      # 10 attempts with up to 3-minute waits, which would hang a live turn. 3 attempts = waits of 1 s then 2 s.
+      # 10 attempts with up to 3-minute waits, which would hang a live turn. 2 attempts = one retry after 0.5 s:
+      # during a provider overload, more retries only add latency (the circuit breaker below handles outages).
       # A quota error (no credits, free-tier limit 0) is also a 429 and will not recover: fix the account instead.
-      max-attempts: 3
+      max-attempts: ${AGENT_LLM_RETRY_MAX_ATTEMPTS:2}
       on-http-codes: 429,503
       backoff:
-        initial-interval: 1000ms
+        initial-interval: 500ms
         multiplier: 2
         max-interval: 4000ms
     openai:
@@ -93,6 +94,14 @@ agent:
       output-per-million-usd: ${AGENT_LLM_PRICE_OUTPUT:0.40}
       cached-input-per-million-usd: ${AGENT_LLM_PRICE_CACHED_INPUT:0.025}
     orchestration: ${AGENT_LLM_ORCHESTRATION:single-pass}
+    # Model HTTP client. A read timeout fails the call; the turn then returns the deterministic answer.
+    http-connect-timeout-seconds: ${AGENT_LLM_HTTP_CONNECT_TIMEOUT_SECONDS:10}
+    http-read-timeout-seconds: ${AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS:30}
+    # Circuit breaker (NFR-5): after N consecutive failed model calls (429/5xx/timeout), skip the model for
+    # open-seconds and return the deterministic answer at once. The next call after the window is a trial.
+    circuit:
+      failure-threshold: ${AGENT_LLM_CIRCUIT_FAILURE_THRESHOLD:3}
+      open-seconds: ${AGENT_LLM_CIRCUIT_OPEN_SECONDS:60}
     synthesis:
       # Hard cap on the single model call. On timeout or error the deterministic draft is returned instead.
       timeout-ms: ${AGENT_LLM_SYNTHESIS_TIMEOUT_MS:8000}
@@ -182,5 +191,8 @@ logging:
   level:
     io.github.harishnoone: DEBUG
     org.springframework.ai: INFO
+    # Spring AI logs every retry as a WARN with a full stack trace; LlmCallLoggingInterceptor already logs one
+    # line per model call (status, latency, error body), so keep only the final error here.
+    org.springframework.ai.retry: ERROR
     org.springframework.kafka: INFO
     org.apache.kafka: WARN

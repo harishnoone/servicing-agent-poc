@@ -1,6 +1,7 @@
 package poc.demo.servicing.agent.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import poc.demo.servicing.agent.llm.LlmCircuitBreaker;
 import poc.demo.servicing.agent.telemetry.TraceCollector;
 import poc.demo.servicing.agent.telemetry.TurnState;
 import org.springframework.beans.factory.ObjectProvider;
@@ -21,8 +22,8 @@ public class LlmHttpConfig {
     @Bean
     @Order(0)
     RestClientCustomizer llmCallLoggingCustomizer(ObjectMapper mapper, ObjectProvider<TraceCollector> trace,
-                                                  ObjectProvider<TurnState> turnState) {
-        LlmCallLoggingInterceptor interceptor = new LlmCallLoggingInterceptor(mapper, trace, turnState);
+                                                  ObjectProvider<TurnState> turnState, LlmCircuitBreaker breaker) {
+        LlmCallLoggingInterceptor interceptor = new LlmCallLoggingInterceptor(mapper, trace, turnState, breaker);
         return builder -> builder.requestInterceptor(interceptor);
     }
 
@@ -34,7 +35,7 @@ public class LlmHttpConfig {
     @Bean
     @Order(1)
     RestClientCustomizer llmTimeoutCustomizer(
-            @Value("${agent.llm.http-connect-timeout-seconds:5}") int connectSeconds,
+            @Value("${agent.llm.http-connect-timeout-seconds:10}") int connectSeconds,
             @Value("${agent.llm.http-read-timeout-seconds:30}") int readSeconds) {
         HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(connectSeconds)).build();
         return builder -> {

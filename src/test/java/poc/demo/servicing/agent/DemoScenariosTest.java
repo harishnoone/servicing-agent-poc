@@ -383,6 +383,18 @@ class DemoScenariosTest {
         assertThat(events(noId)).noneMatch(e -> e.startsWith("CONVERSATION_"));
     }
 
+    /** A first turn without a conversation id can be continued with the sessionId the response returns. */
+    @Test
+    void returnedSessionIdContinuesTheConversation() throws Exception {
+        JsonNode first = chat("cust_789", "Can you waive my late fee?");
+        String sessionId = first.path("sessionId").asText();
+        assertThat(sessionId).startsWith("sess-");
+
+        JsonNode second = chatIn(sessionId, "cust_789", "Why not? Can you make an exception?");
+        assertThat(second.path("sessionId").asText()).isEqualTo(sessionId);
+        assertThat(events(second)).contains("CONVERSATION_HISTORY_LOADED (1 earlier exchange)");
+    }
+
     @Test
     void kpiReportAggregatesTurns() throws Exception {
         when(dltService.totalDepth()).thenReturn(2L);

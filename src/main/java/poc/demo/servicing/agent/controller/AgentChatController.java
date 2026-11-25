@@ -154,9 +154,9 @@ public class AgentChatController {
 
         AgentTurnReport.CustomerSnapshot snapshot = snapshot(request.customerId());
 
-        // FR-6.6: earlier exchanges, only when the client sends a conversation id.
-        String conversationId = request.conversationId() == null || request.conversationId().isBlank()
-                ? null : request.conversationId();
+        // FR-6.6: every turn is saved under its session id (the client's conversationId, or the one minted for
+        // this turn and returned as sessionId), so a client continues the chat by sending that id back.
+        String conversationId = sessionId;
         List<Exchange> history = memory.history(request.customerId(), conversationId);
         if (!history.isEmpty()) {
             trace.record("CONVERSATION_HISTORY_LOADED (" + history.size() + " earlier exchange"

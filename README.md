@@ -358,7 +358,7 @@ Requirement ids in code comments (e.g. `FR-3.8`) refer to `docs/requirements.md`
 - The LLM path has been run against Gemini only, not OpenAI.
 - With a model in the loop a turn takes about 1.5 to 5 s in LLM mode and 4 to 47 s in agent planner mode (provider load varies); the <1.5 s P95 target is met only by deterministic mode (2 to 65 ms). Streaming the reply is the next step.
 - Prompt-caching savings are estimated, not measured: Gemini's OpenAI-compatible endpoint does not report cached tokens, so `projectedCachingSavingPercent` is a ceiling, and the default prices are placeholders.
-- Conversation memory is short-term: the last 3 exchanges per customer and `conversationId`, kept 30 minutes in Redis. There is no long-term case memory, and turns without a `conversationId` stand alone.
+- Conversation memory is short-term: the last 3 exchanges per customer and `conversationId`, kept 30 minutes in Redis. There is no long-term case memory. To continue a chat, send the previous response's `sessionId` as `conversationId`; a request without it starts a new conversation.
 - Agent planner mode caps each model call at 30 s but not the whole turn, so a slow provider can push a turn past the 60 s SLA (111 s measured on 2026-11-24).
 - Deterministic and LLM mode use a keyword-based tool plan; vague questions ("any news?") get the general account summary, which still names open tickets and escalates breaches. Agent planner mode handles any phrasing, more slowly.
 - The vector half of hybrid search is a local character-trigram embedding so the stack runs offline; swap `KnowledgeRetrievalTools.embed()` for a real embedding model.

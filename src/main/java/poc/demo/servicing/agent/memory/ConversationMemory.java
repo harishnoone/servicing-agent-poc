@@ -49,8 +49,17 @@ public class ConversationMemory {
             return List.of();
         }
         try {
-            String json = redis.opsForValue().get(key(customerId, conversationId));
-            return json == null ? List.of() : mapper.readValue(json, LIST);
+            String key = key(customerId, conversationId);
+            long start = System.nanoTime();
+            String json = redis.opsForValue().get(key);
+            long ms = (System.nanoTime() - start) / 1_000_000;
+            if (json == null) {
+                log.debug("Conversation memory MISS: key={} (new conversation) in {} ms", key, ms);
+                return List.of();
+            }
+            List<Exchange> history = mapper.readValue(json, LIST);
+            log.info("Conversation memory HIT: key={} exchanges={} in {} ms", key, history.size(), ms);
+            return history;
         } catch (Exception e) {
             log.warn("Conversation memory unavailable ({}); running the turn without history", e.toString());
             return List.of();
@@ -70,6 +79,8 @@ public class ConversationMemory {
         }
         try {
             redis.opsForValue().set(key(customerId, conversationId), mapper.writeValueAsString(updated), ttl);
+            log.debug("Conversation memory saved: key={} exchanges={} ttl={} min", key(customerId, conversationId),
+                    updated.size(), ttl.toMinutes());
         } catch (Exception e) {
             log.warn("Could not save conversation memory: {}", e.toString());
         }

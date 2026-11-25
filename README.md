@@ -241,7 +241,7 @@ AGENT_LLM_REASONING_EFFORT=low
 # AGENT_LLM_FALLBACK_MODELS=<another Gemini Flash model>
 ```
 
-**Backup model on 503** (`AGENT_LLM_FALLBACK_MODELS`, comma-separated, empty = off): when the configured model answers HTTP 503 (`high demand`), the call is retried once on each backup in order, and the trace shows `LLM_MODEL_FALLBACK: <model> -> <backup> (HTTP 503)`. Timeouts, 429s and other errors never switch models; the circuit breaker handles those. After a backup answers, calls stay on it for `AGENT_LLM_FALLBACK_STICKY_SECONDS` (default 60), then try the configured model again. Pick a backup from the same family; an entry equal to `OPENAI_MODEL` is ignored. Gemini 3 Flash models work as backups in agentic mode because tool-call thought signatures are kept across the switch.
+**Backup model on 503 or read timeout** (`AGENT_LLM_FALLBACK_MODELS`, comma-separated, empty = off): when the configured model answers HTTP 503 (`high demand`), the call is retried on each backup in order; when it does not answer within the read timeout (30 s), the call is retried once on the next model, so one call takes at most 60 s. The trace shows `LLM_MODEL_FALLBACK: <model> -> <backup> (HTTP 503)` or `(read timeout)`. Connect timeouts, 429s and other errors never switch models; the circuit breaker handles those. After a backup answers, calls stay on it for `AGENT_LLM_FALLBACK_STICKY_SECONDS` (default 60), then try the configured model again. Pick a backup from the same family; an entry equal to `OPENAI_MODEL` is ignored. Gemini 3 Flash models work as backups in agentic mode because tool-call thought signatures are kept across the switch.
 
 **OpenAI:** `OPENAI_API_KEY=sk-...` (model defaults to `gpt-4o`). Leave `AGENT_LLM_REASONING_EFFORT` empty, because `gpt-4o` rejects it. Not yet run end to end.
 
@@ -359,7 +359,7 @@ Requirement ids in code comments (e.g. `FR-3.8`) refer to `docs/requirements.md`
 - With a model in the loop a turn takes about 1.5 to 5 s in LLM mode and 4 to 47 s in agent planner mode (provider load varies); the <1.5 s P95 target is met only by deterministic mode (2 to 65 ms). Streaming the reply is the next step.
 - Prompt-caching savings are estimated, not measured: Gemini's OpenAI-compatible endpoint does not report cached tokens, so `projectedCachingSavingPercent` is a ceiling, and the default prices are placeholders.
 - Conversation memory is short-term: the last 3 exchanges per customer and `conversationId`, kept 30 minutes in Redis. There is no long-term case memory. To continue a chat, send the previous response's `sessionId` as `conversationId`; a request without it starts a new conversation.
-- Agent planner mode caps each model call at 30 s but not the whole turn, so a slow provider can push a turn past the 60 s SLA (111 s measured on 2026-11-24).
+- Agent planner mode caps each model call at 30 s (60 s when a read timeout switches to the backup) but not the whole turn, so a slow provider can push a turn past the 60 s SLA (111 s measured on 2026-11-24).
 - Deterministic and LLM mode use a keyword-based tool plan; vague questions ("any news?") get the general account summary, which still names open tickets and escalates breaches. Agent planner mode handles any phrasing, more slowly.
 - The vector half of hybrid search is a local character-trigram embedding so the stack runs offline; swap `KnowledgeRetrievalTools.embed()` for a real embedding model.
 - KPI counters are in memory; "deflection" means resolved without escalation, not a measured re-contact rate.

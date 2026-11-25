@@ -19,6 +19,7 @@ import poc.demo.servicing.agent.telemetry.TurnState;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -26,6 +27,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -52,6 +54,7 @@ class ModelFallbackInterceptorTest {
         final Map<String, HttpStatus> statusByModel;
         final List<String> calledModels = new ArrayList<>();
         final List<Long> contentLengths = new ArrayList<>();
+        final Map<String, IOException> failByModel = new HashMap<>();
         IOException failWith;
 
         FakeProvider(Map<String, HttpStatus> statusByModel) {
@@ -65,6 +68,9 @@ class ModelFallbackInterceptorTest {
             contentLengths.add(request.getHeaders().getContentLength());
             if (failWith != null) {
                 throw failWith;
+            }
+            if (failByModel.containsKey(model)) {
+                throw failByModel.get(model);
             }
             HttpStatus status = statusByModel.getOrDefault(model, HttpStatus.OK);
             String json = status == HttpStatus.OK ? "{\"usage\":{}}" : "{\"error\":{\"status\":\"UNAVAILABLE\"}}";
@@ -119,11 +125,53 @@ class ModelFallbackInterceptorTest {
     }
 
     @Test
-    void timeoutDoesNotSwitchModels() {
+    void readTimeoutSwitchesToBackupAndSticks() throws IOException {
+        ModelFallbackInterceptor interceptor = interceptor("backup");
+        FakeProvider provider = new FakeProvider(Map.of());
+        provider.failByModel.put("primary", new HttpTimeoutException("request timed out"));
+
+        assertThat(call(interceptor, provider).getStatusCode().value()).isEqualTo(200);
+        assertThat(provider.calledModels).containsExactly("primary", "backup");
+
+        FakeProvider next = new FakeProvider(Map.of());
+        call(interceptor, next);
+        assertThat(next.calledModels).containsExactly("backup");
+    }
+
+    @Test
+    void connectTimeoutDoesNotSwitchModels() {
+        FakeProvider provider = new FakeProvider(Map.of());
+        provider.failWith = new HttpConnectTimeoutException("connect timed out");
+
+        assertThatThrownBy(() -> call(interceptor("backup"), provider)).isInstanceOf(HttpConnectTimeoutException.class);
+        assertThat(provider.calledModels).containsExactly("primary");
+    }
+
+    @Test
+    void readTimeoutOnEveryModelIsThrownAfterTheLast() {
         FakeProvider provider = new FakeProvider(Map.of());
         provider.failWith = new HttpTimeoutException("request timed out");
 
         assertThatThrownBy(() -> call(interceptor("backup"), provider)).isInstanceOf(HttpTimeoutException.class);
+        assertThat(provider.calledModels).containsExactly("primary", "backup");
+    }
+
+    /** Found live: a timed-out sticky backup walked on to the next backup and the primary, 30 s each. */
+    @Test
+    void readTimeoutSwitchesAtMostOncePerCall() {
+        FakeProvider provider = new FakeProvider(Map.of());
+        provider.failWith = new HttpTimeoutException("request timed out");
+
+        assertThatThrownBy(() -> call(interceptor("b1", "b2"), provider)).isInstanceOf(HttpTimeoutException.class);
+        assertThat(provider.calledModels).containsExactly("primary", "b1");
+    }
+
+    @Test
+    void otherIoErrorsDoNotSwitchModels() {
+        FakeProvider provider = new FakeProvider(Map.of());
+        provider.failWith = new IOException("connection reset");
+
+        assertThatThrownBy(() -> call(interceptor("backup"), provider)).isInstanceOf(IOException.class);
         assertThat(provider.calledModels).containsExactly("primary");
     }
 

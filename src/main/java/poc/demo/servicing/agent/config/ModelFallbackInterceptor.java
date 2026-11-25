@@ -16,14 +16,17 @@ import org.springframework.http.client.support.HttpRequestWrapper;
 import org.springframework.web.context.request.RequestContextHolder;
 
 import java.io.IOException;
+import java.net.http.HttpConnectTimeoutException;
+import java.net.http.HttpTimeoutException;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Switches to a backup model when the configured one answers HTTP 503 (provider says the model is busy).
- * Only 503 triggers a switch: timeouts, I/O errors, 429 and other statuses pass through unchanged and are
- * handled by the circuit breaker. The interceptor sits closer to the network than
+ * Switches to a backup model when the configured one answers HTTP 503 (provider says the model is busy) or does
+ * not answer within the read timeout. Connect timeouts, other I/O errors, 429 and other statuses pass through
+ * unchanged and are handled by the circuit breaker. Each model gets the full read timeout, and a call switches at
+ * most once on a read timeout, so a call takes at most twice the read timeout. The interceptor sits closer to the network than
  * {@link LlmCallLoggingInterceptor}, so the breaker only sees the final outcome: a backup that answers counts
  * as a success, and a failure is recorded only when every model returned 503.
  * <p>
@@ -83,17 +86,41 @@ public class ModelFallbackInterceptor implements ClientHttpRequestInterceptor {
 
         ClientHttpResponse response = null;
         String previous = null;
-        for (String model : order) {
-            if (response != null) {
-                response.close();
-                log.warn("LLM model {} returned HTTP 503 (busy); retrying with model {}", previous, model);
-                recordTrace("LLM_MODEL_FALLBACK: " + previous + " -> " + model + " (HTTP 503)");
+        String reason = null;
+        boolean timedOutOnce = false;
+        for (int i = 0; i < order.size(); i++) {
+            String model = order.get(i);
+            if (reason != null) {
+                log.warn("LLM model {} failed ({}); retrying with model {}", previous, reason, model);
+                recordTrace("LLM_MODEL_FALLBACK: " + previous + " -> " + model + " (" + reason + ")");
             }
             boolean isPrimary = model.equals(primary);
             byte[] attemptBody = isPrimary ? body : withModel(json, model);
             HttpRequest attempt = isPrimary ? request : withContentLength(request, attemptBody.length);
-            response = execution.execute(attempt, attemptBody);
             previous = model;
+            try {
+                response = execution.execute(attempt, attemptBody);
+            } catch (HttpTimeoutException e) {
+                // A read timeout (the model did not answer in time) tries the next model. A connect timeout
+                // (HttpConnectTimeoutException, a subclass) means the provider is unreachable, so every model
+                // would fail the same way: it goes to the circuit breaker unchanged. So does the last model's
+                // read timeout.
+                // At most one switch per call on a read timeout: each attempt costs the full read timeout, so
+                // the worst case stays at twice the timeout. (503s are fast and may walk the whole list.)
+                if (e instanceof HttpConnectTimeoutException || i == order.size() - 1 || timedOutOnce) {
+                    clearSticky();
+                    throw e;
+                }
+                timedOutOnce = true;
+                response = null;
+                reason = "read timeout";
+                continue;
+            }
+            if (response.getStatusCode().value() == 503 && i < order.size() - 1) {
+                response.close();
+                reason = "HTTP 503";
+                continue;
+            }
             if (response.getStatusCode().value() != 503) {
                 if (isPrimary) {
                     clearSticky();

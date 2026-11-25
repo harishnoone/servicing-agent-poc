@@ -195,8 +195,9 @@ About 8 seconds later (retries after 1s, 2s and 4s), **Admin → GET /api/admin/
 | `LLM_SYNTHESIS_TRUNCATED` | Thinking tokens used up `max-tokens` | Raise `AGENT_LLM_SYNTHESIS_MAX_TOKENS` or lower `AGENT_LLM_REASONING_EFFORT` |
 | Agent planner turn hangs after one `LLM round trip` line | A provider call stalled (seen on Gemini under load). Before 2026-11-23 the model HTTP client had no read timeout | Fixed: read timeout per model call (now 30 s, `AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS`); the turn then returns the deterministic answer (`AGENTIC_FALLBACK` in the trace). Not caused by prompt caching |
 | Log shows `HTTP 503 ... high demand` and `LLM circuit OPEN` | Gemini overloaded (provider side, not our code) | Expected: after 3 failed calls the circuit opens for 60 s and turns return the deterministic answer in about 1.5 s (`LLM_CIRCUIT_OPEN` in the trace). It closes on the first successful trial call. For the demo, lead with deterministic mode; set `AGENT_LLM_FALLBACK_MODELS` to a second model, or switch `OPENAI_MODEL`, if 503s persist |
+| Want to confirm memory is used | | The app log shows `Conversation memory HIT: key=conversation:<customer>:<sessionId> exchanges=<n>` on each turn that loads history |
 | Follow-up answered as if it were a new conversation | No `conversationId` in the request, a different customer id, or more than 30 minutes since the last turn | Send the previous response's `sessionId` as `conversationId`; the trace shows `CONVERSATION_HISTORY_LOADED (n earlier exchanges)` when history is used |
-| Trace shows `LLM_MODEL_FALLBACK: <model> -> <backup> (HTTP 503)` | The configured model was busy and the backup answered | Expected. Calls stay on the backup for 60 s, then try the configured model again. If every model is busy the circuit breaker takes over |
+| Trace shows `LLM_MODEL_FALLBACK: <model> -> <backup> (HTTP 503)` or `(read timeout)` | The configured model was busy or did not answer within 30 s, and the call moved to the backup | Expected. Calls stay on the backup for 60 s, then try the configured model again. If every model is busy the circuit breaker takes over |
 | Agentic turn fails with HTTP 400 `missing a thought_signature` | A Gemini 3 tool call was replayed without its signature. The signature interceptor is registered only when `OPENAI_BASE_URL` contains `generativelanguage.googleapis.com` | Use Gemini's real base URL (a proxy URL without that host turns it off). Keep the RestClient customizer order in `LlmHttpConfig` / `GeminiCompatConfig` (fallback last) |
 | Turns take 20 to 100 s | `AGENT_LLM_ORCHESTRATION=agentic` on a Pro model (several full model calls per turn) | Use single-pass and Flash-Lite |
 | `KafkaAdmin` timeouts at app startup on the host | Kafka not reachable at `localhost:9092` | Start the infra containers first |
@@ -322,7 +323,7 @@ AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS=60
 |---|---|---|
 | Deterministic | No model call | No model call |
 | LLM mode (single-pass) | One call to the backup | Past the 15 s synthesis cap, or any other error: the deterministic draft |
-| Agent planner | The call goes to the backup and stays there for 60 s | A 30 s timeout or other error: `AGENTIC_FALLBACK`, the deterministic answer |
+| Agent planner | The call goes to the backup and stays there for 60 s | A 30 s read timeout: one retry on the backup (up to 60 s per call). If that also times out, or on any other error: `AGENTIC_FALLBACK`, the deterministic answer |
 
 In every LLM mode, 3 failed calls in a row (every model busy, or timeouts) open the circuit breaker: for 60 s turns skip the model and return the deterministic answer straight away (`LLM_CIRCUIT_OPEN` in the trace).
 

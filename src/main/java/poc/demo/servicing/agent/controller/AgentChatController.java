@@ -165,8 +165,12 @@ public class AgentChatController {
 
         String response;
         boolean failed = false;
+        // A thank-you or goodbye needs no tools or facts: answered in Java in every mode, without a model call.
+        boolean closing = DeterministicReplayAgent.isClosing(sanitized);
         try {
-            if (replayMode) {
+            if (closing) {
+                response = replayAgent.closing(history);
+            } else if (replayMode) {
                 response = replayAgent.respond(request.customerId(), sanitized, history);
             } else if (!singlePass && !circuitBreaker.allowRequest()) {
                 // Provider is failing: skip the model instead of waiting for retries and timeouts.
@@ -203,7 +207,8 @@ public class AgentChatController {
         memory.append(request.customerId(), conversationId, history, sanitized, response);
 
         String status = failed ? "PARTIAL" : turnState.isEscalated() ? "ESCALATED" : "RESOLVED_AUTONOMOUSLY";
-        double ahtSaved = "RESOLVED_AUTONOMOUSLY".equals(status) ? ahtSavedMinutes : 0.0;
+        // A closing message is not a resolved inquiry, so it saves no handling time.
+        double ahtSaved = "RESOLVED_AUTONOMOUSLY".equals(status) && !closing ? ahtSavedMinutes : 0.0;
         switch (status) {
             case "ESCALATED" -> kpi.recordEscalation();
             case "RESOLVED_AUTONOMOUSLY" -> kpi.recordDeflection(ahtSaved);

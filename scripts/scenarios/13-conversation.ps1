@@ -1,4 +1,4 @@
-# Scenario 13: a conversational customer. Follow-up questions keep the topic, and asking for a person escalates.
+# Scenario 13: a conversational customer. Follow-ups keep the topic, asking for a person escalates, thank-you closes.
 . "$PSScriptRoot\_common.ps1"
 Require-Stack
 Title "13. Multi-turn conversation (Jordan cust_789): policy back-and-forth, then 'let me talk to a person'"
@@ -24,6 +24,13 @@ Check "escalated" ($r.kpiImpact.deflectionStatus -eq "ESCALATED")
 Check "handoff card says the customer asked for a person" ($r.handoffCard.detectedSentiment -eq "CUSTOMER_REQUESTED_HUMAN")
 Check "handoff card carries the earlier conversation or the waiver topic" ((($r.handoffCard.attemptedSteps -join " ") -match "waive") -or ($r.handoffCard.classifiedIntent -match "WAIVER|BILLING"))
 CheckLatency "turn 3" $r
+
+Say "Jordan says thank you. The agent closes politely instead of repeating its last answer (no tools, no model call):"
+$r = Chat "cust_789" "Thank you!" $conv
+Check "acknowledged as a closing" (Trace-Has $r "CONVERSATION_CLOSING*")
+Check "reply is a short thank-you that mentions the hand-off" (($r.finalResponse -match "^You're welcome") -and ($r.finalResponse -match "Tier-2"))
+Check "no tools re-run" (-not (Trace-Has $r "TOOL_CALL*"))
+CheckLatency "turn 4" $r
 
 Say "Without a conversation id each turn stands alone (no history is loaded):"
 $r = Chat "cust_789" "Why not?"

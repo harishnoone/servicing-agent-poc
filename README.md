@@ -115,7 +115,7 @@ A turn's response (trimmed):
 |---|---|
 | `cust_123` Elena Vance | Waiver `APPROVED`, applied downstream: invoice `WAIVED` in Redis via CDC; ticket status within SLA |
 | `cust_456` Marcus Sterling | ERR-504-GW fix, superseded legacy advice flagged, `SLA_BREACH` escalation (handoff card + escalation action); follow-up on TKT-8841 instead of a duplicate ticket |
-| `cust_789` Jordan Blake | `TIER_INELIGIBLE`, clean denial; multi-turn: "Why not?" keeps the topic, "speak to a real person" escalates (scenario 13) |
+| `cust_789` Jordan Blake | `TIER_INELIGIBLE`, clean denial; multi-turn: "Why not?" keeps the topic, "speak to a real person" escalates, "Thank you!" gets a short acknowledgement (scenario 13) |
 | `cust_222` Noah Patel | Waiver `APPROVED` |
 | `cust_321` Priya Nair | `TENURE_TOO_SHORT`, escalated for supervisor review |
 | `cust_654` Diego Alvarez | `FEE_TOO_HIGH` ($75) |

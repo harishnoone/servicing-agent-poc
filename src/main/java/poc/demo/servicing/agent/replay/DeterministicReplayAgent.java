@@ -76,6 +76,38 @@ public class DeterministicReplayAgent {
     private static final Pattern AFFIRMATIVE = Pattern.compile(
             "^\\s*(yes|yeah|yep|sure|ok|okay|please|please do|go ahead|do it|do that)\\b.*", Pattern.CASE_INSENSITIVE);
 
+    /** A thank-you or goodbye on its own: short, no question, no request, no problem report. */
+    private static final Pattern CLOSING = Pattern.compile("\\b(thank you|thank u|thanks|thx|ty|cheers|many thanks"
+            + "|appreciate (it|that|you|your help|the help)|that[\u2019']?s all|that is all|that[\u2019']?s it|all set|bye|goodbye"
+            + "|good bye|have a (good|great|nice) (day|one|evening|weekend))\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern NOT_CLOSING = Pattern.compile("\\?|\\b(but|also|another|can you|could you|would you"
+            + "|will you|please|what|why|how|when|where|need|want|still|not|no longer|doesn[\u2019']?t|isn[\u2019']?t|didn[\u2019']?t"
+            + "|won[\u2019']?t|can[\u2019']?t|problem|issue|error|down|broken|for nothing)\\b", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * @return true for a closing message ("Thank you!", "ok thanks, that's all", "great, bye"): it is answered with a
+     * short acknowledgement, without tools or a model call. "Thanks, but can you waive it?", "thanks, the gateway
+     * is still down" and "thanks for nothing, get me a human" are not closings and get a full turn.
+     */
+    public static boolean isClosing(String message) {
+        if (message == null || message.isBlank() || message.strip().split("\\s+").length > 12) {
+            return false;
+        }
+        return CLOSING.matcher(message).find() && !NOT_CLOSING.matcher(message).find()
+                && !EscalationTools.isHumanRequest(message);
+    }
+
+    /** Acknowledges a closing message; mentions the hand-off if this conversation was already escalated. */
+    public String closing(List<Exchange> history) {
+        trace.record("CONVERSATION_CLOSING: acknowledged without tools or a model call");
+        boolean handedOff = history.stream().map(Exchange::agent)
+                .anyMatch(a -> a.contains("Tier-2") || a.contains("asked a supervisor"));
+        return handedOff
+                ? "You're welcome. A Tier-2 specialist has your case and will contact you with the full context. "
+                        + "Is there anything else I can help with?"
+                : "You're welcome. Is there anything else I can help you with today?";
+    }
+
     public String respond(String customerId, String message) {
         return respond(customerId, message, List.of());
     }
@@ -89,6 +121,9 @@ public class DeterministicReplayAgent {
     public String respond(String customerId, String message, List<Exchange> history) {
         if (EscalationTools.isHumanRequest(message)) {
             return humanHandoff(customerTools.getCustomerState(customerId), message, history, false);
+        }
+        if (isClosing(message)) {
+            return closing(history); // before the "yes" check, so "ok thanks" is a thank-you, not a yes
         }
         if (!history.isEmpty() && history.get(history.size() - 1).agent().contains(SUPERVISOR_OFFER)
                 && message.length() <= 60 && AFFIRMATIVE.matcher(message).matches()) {

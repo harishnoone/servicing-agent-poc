@@ -373,6 +373,23 @@ class DemoScenariosTest {
         assertThat(yes.path("finalResponse").asText()).contains("asked a supervisor to review it");
     }
 
+    /** A thank-you ends the turn politely: no repeat of the earlier answer, no tools, no hand-off, no AHT credit. */
+    @Test
+    void scenario13_thankYouIsAcknowledgedNotAnsweredAgain() throws Exception {
+        chatIn("conv-13c", "cust_789", "Can you waive my late fee?");
+
+        JsonNode thanks = chatIn("conv-13c", "cust_789", "Ok thanks, that's all");
+        assertThat(thanks.path("finalResponse").asText()).isEqualTo("You're welcome. Is there anything else I can help you with today?");
+        assertThat(events(thanks)).contains("CONVERSATION_CLOSING: acknowledged without tools or a model call")
+                .noneMatch(e -> e.startsWith("TOOL_CALL"));
+        assertThat(thanks.at("/kpiImpact/deflectionStatus").asText()).isEqualTo("RESOLVED_AUTONOMOUSLY");
+        assertThat(thanks.at("/kpiImpact/estimatedAhtSavedMinutes").asDouble()).isZero();
+
+        chatIn("conv-13c", "cust_789", "Can I please speak to a real person?");
+        JsonNode after = chatIn("conv-13c", "cust_789", "Thank you!");
+        assertThat(after.path("finalResponse").asText()).contains("Tier-2 specialist has your case");
+    }
+
     /** Memory is keyed by customer: the same conversation id never leaks another customer's history. */
     @Test
     void conversationMemoryIsScopedToTheCustomer() throws Exception {

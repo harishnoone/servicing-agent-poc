@@ -20,6 +20,7 @@ import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.Set;
 
 /**
@@ -38,6 +39,20 @@ public class EscalationTools {
     static final List<String> HIGH_FRUSTRATION_KEYWORDS = List.of(
             "furious", "unacceptable", "lawsuit", "cancel my", "cancelling", "canceling",
             "ridiculous", "disgusting", "terrible", "horrible", "worst", "fed up", "sick of");
+
+    /** The customer asks for a person. Checked in Java so the hand-off does not depend on the model. */
+    static final List<String> HUMAN_REQUEST_PHRASES = List.of(
+            "human", "real person", "a person", "live person", "representative", "live agent", "real agent",
+            "speak to someone", "talk to someone", "speak with someone", "talk with someone",
+            "speak to an agent", "talk to an agent", "speak to a supervisor", "talk to a supervisor",
+            "ask a supervisor", "your supervisor", "a manager");
+    private static final Pattern HUMAN_REQUEST = Pattern.compile("\\b(" + String.join("|",
+            HUMAN_REQUEST_PHRASES.stream().map(Pattern::quote).toList()) + ")\\b", Pattern.CASE_INSENSITIVE);
+
+    /** @return true if the message asks to be handed to a person (whole words, so "a personal loan" does not match) */
+    public static boolean isHumanRequest(String message) {
+        return message != null && HUMAN_REQUEST.matcher(message).find();
+    }
 
     private static final Set<String> CLOSED_STATUSES = Set.of("RESOLVED", "CLOSED");
 
@@ -70,7 +85,7 @@ public class EscalationTools {
     }
 
     @Tool(description = "Decide whether to hand the conversation to a human Tier-2 agent and compile "
-            + "the handoff card. Call this when the customer is highly frustrated, a ticket has "
+            + "the handoff card. Call this when the customer asks for a person, is highly frustrated, a ticket has "
             + "breached its SLA, retrieval confidence was low, or the request is outside policy. "
             + "The tool re-checks these conditions itself; set forceEscalate=true only when policy "
             + "requires a supervisor (e.g. out-of-policy waiver).")
@@ -86,6 +101,11 @@ public class EscalationTools {
 
         List<String> triggers = new ArrayList<>();
         String lower = customerMessage == null ? "" : customerMessage.toLowerCase();
+        // First, so the handoff card says why the customer is here rather than a side condition.
+        // The model may paraphrase customerMessage, so the turn's original message is checked too.
+        if (isHumanRequest(lower) || isHumanRequest(turnState.getCustomerMessage())) {
+            triggers.add("CUSTOMER_REQUESTED_HUMAN");
+        }
         if (HIGH_FRUSTRATION_KEYWORDS.stream().anyMatch(lower::contains)) {
             triggers.add("HIGH_FRUSTRATION");
         }
@@ -179,6 +199,7 @@ public class EscalationTools {
     private static double urgency(List<String> triggers) {
         double u = 0.5;
         if (triggers.contains("LOW_RETRIEVAL_CONFIDENCE")) u = Math.max(u, 0.6);
+        if (triggers.contains("CUSTOMER_REQUESTED_HUMAN")) u = Math.max(u, 0.7);
         if (triggers.contains("HIGH_FRUSTRATION")) u = Math.max(u, 0.85);
         if (triggers.contains("SLA_BREACH")) u = Math.max(u, 0.95);
         return u;
@@ -192,6 +213,10 @@ public class EscalationTools {
         if (triggers.contains("HIGH_FRUSTRATION")) {
             return "Customer is highly frustrated: acknowledge the experience, review account history, "
                     + "and consider discretionary relief per billing_waivers_policy.md section 4.3.";
+        }
+        if (triggers.contains("CUSTOMER_REQUESTED_HUMAN")) {
+            return "Customer asked to speak to a person: contact them directly, review the attempted steps "
+                    + "so they do not have to repeat themselves, and resolve or explain the decision.";
         }
         if (triggers.contains("LOW_RETRIEVAL_CONFIDENCE")) {
             return "No policy match above the confidence threshold: answer manually from current policy.";

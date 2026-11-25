@@ -61,6 +61,7 @@ Every step below is also a standalone script in `scripts/scenarios/`, so you can
 | 10 | `10-prompt-caching.ps1` | Optional: prompt caching (live mode only; SKIPPED offline) |
 | 11 | `11-billing-investigation.ps1` | Step 3c: multi-step investigation (self-seeds Riley) |
 | 12 | `12-ticket-status.ps1` | Step 3d: ticket status inquiry |
+| 13 | `13-conversation.ps1` | Step 3e: multi-turn conversation, then "let me talk to a person" |
 
 ### Step 1: Live CDC mutation (Elena)
 
@@ -117,6 +118,14 @@ Script: `.\scripts\scenarios\run.ps1 11` (creates Riley through CDC if needed). 
 ### Step 3d: Ticket status inquiry (Elena, Marcus)
 
 Script: `.\scripts\scenarios\run.ps1 12`. Elena asks `"Hi, what's the status of my ticket?"`: the reply lists TKT-7721 with its subject, status and SLA time left, and the turn resolves. Marcus asks `"Any news on TKT-8841?"`: the reply says the SLA was breached 4 hours ago and the turn escalates with the handoff card. Phrasing matters in deterministic mode: "status of my ticket", "my ticket", "any update on" or a ticket id give the ticket-status answer; a vague "Any news?" or "What is my status?" gives the general account summary, which also names the ticket. Every phrasing escalates a breached ticket. In agent planner mode the model handles all phrasings and Java enforces the escalation check if the model skips it (`AGENTIC_ESCALATION_ENFORCED`).
+
+### Step 3e: A conversational customer (Jordan)
+
+Script: `.\scripts\scenarios\run.ps1 13`. Turns that share a `conversationId` remember the last 3 exchanges (FR-6.6). Jordan asks `"Can you waive my late fee?"` and is denied (`TIER_INELIGIBLE`, offer of a supervisor review). Then `"Why not? Can you make an exception?"`: the trace shows `CONVERSATION_HISTORY_LOADED (1 earlier exchange)` and the reply stays on the waiver. Then `"That doesn't help me. Can I please speak to a real person?"`: the turn escalates with `CUSTOMER_REQUESTED_HUMAN` on the handoff card, and the card's attempted steps include the earlier messages, so the Tier-2 agent does not ask again. A plain "yes" after the supervisor offer also escalates. In Swagger, send the same `conversationId` on each turn; without it every turn stands alone.
+
+Measured on 2026-11-24 (Gemini heavily loaded): deterministic 4 to 9 ms per turn, all checks passed. Single-pass passed every check, but every model call hit 503 or the 15 s cap, so the replies were the deterministic draft (about 15 s per turn). Agent planner passed every behaviour check; the model used the history (it escalated the "exception" request on its own), turns took 30 to 111 s, and the slowest turn exceeded the 60 s SLA because four calls of 25 to 30 s ran in sequence.
+
+**If the panel asks "what if the customer gets conversational?":** follow-ups keep the topic for the last 3 exchanges; asking for a person always reaches Tier-2 with the conversation attached, in every mode, because Java checks the request and does not rely on the model; repeat escalations reuse the same action, so there is no duplicate handoff. Long-term case memory is the next step.
 
 ### Step 4: KPIs
 
@@ -186,6 +195,7 @@ About 8 seconds later (retries after 1s, 2s and 4s), **Admin → GET /api/admin/
 | `LLM_SYNTHESIS_TRUNCATED` | Thinking tokens used up `max-tokens` | Raise `AGENT_LLM_SYNTHESIS_MAX_TOKENS` or lower `AGENT_LLM_REASONING_EFFORT` |
 | Agent planner turn hangs after one `LLM round trip` line | A provider call stalled (seen on Gemini under load). Before 2026-11-23 the model HTTP client had no read timeout | Fixed: read timeout per model call (now 30 s, `AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS`); the turn then returns the deterministic answer (`AGENTIC_FALLBACK` in the trace). Not caused by prompt caching |
 | Log shows `HTTP 503 ... high demand` and `LLM circuit OPEN` | Gemini overloaded (provider side, not our code) | Expected: after 3 failed calls the circuit opens for 60 s and turns return the deterministic answer in about 1.5 s (`LLM_CIRCUIT_OPEN` in the trace). It closes on the first successful trial call. For the demo, lead with deterministic mode; set `AGENT_LLM_FALLBACK_MODELS` to a second model, or switch `OPENAI_MODEL`, if 503s persist |
+| Follow-up answered as if it were a new conversation | No `conversationId` in the request, a different customer id, or more than 30 minutes since the last turn | Send the same `conversationId` on every turn; the trace shows `CONVERSATION_HISTORY_LOADED (n earlier exchanges)` when history is used |
 | Trace shows `LLM_MODEL_FALLBACK: <model> -> <backup> (HTTP 503)` | The configured model was busy and the backup answered | Expected. Calls stay on the backup for 60 s, then try the configured model again. If every model is busy the circuit breaker takes over |
 | Agentic turn fails with HTTP 400 `missing a thought_signature` | A Gemini 3 tool call was replayed without its signature. The signature interceptor is registered only when `OPENAI_BASE_URL` contains `generativelanguage.googleapis.com` | Use Gemini's real base URL (a proxy URL without that host turns it off). Keep the RestClient customizer order in `LlmHttpConfig` / `GeminiCompatConfig` (fallback last) |
 | Turns take 20 to 100 s | `AGENT_LLM_ORCHESTRATION=agentic` on a Pro model (several full model calls per turn) | Use single-pass and Flash-Lite |
@@ -290,9 +300,9 @@ AGENT_LLM_ORCHESTRATION=single-pass
 AGENT_LLM_REASONING_EFFORT=low
 OPENAI_MODEL=gemini-3.1-flash-lite
 AGENT_LLM_FALLBACK_MODELS=gemini-3.5-flash
-AGENT_LLM_SYNTHESIS_TIMEOUT_MS=15000
+AGENT_LLM_SYNTHESIS_TIMEOUT_MS=30000
 AGENT_LLM_SYNTHESIS_MAX_TOKENS=2048
-AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS=30
+AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS=60
 ```
 
 **Agent planner** (2 to 5 model calls per turn, 60 s SLA). Log: `Agent planner mode: LLM agentic (model calls tools)`
@@ -305,7 +315,7 @@ AGENT_LLM_ORCHESTRATION=agentic
 AGENT_LLM_REASONING_EFFORT=low
 OPENAI_MODEL=gemini-3.6-flash
 AGENT_LLM_FALLBACK_MODELS=gemini-3.5-flash
-AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS=30
+AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS=60
 ```
 
 | Mode | When the model is busy (503) | When it is slow or fails |

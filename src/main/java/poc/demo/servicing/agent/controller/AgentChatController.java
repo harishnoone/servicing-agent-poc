@@ -1,5 +1,7 @@
 package poc.demo.servicing.agent.controller;
 
+import poc.demo.servicing.agent.memory.ConversationMemory;
+import poc.demo.servicing.agent.memory.ConversationMemory.Exchange;
 import poc.demo.servicing.agent.dlt.DltService;
 import poc.demo.servicing.agent.guardrails.PiiSanitizer;
 import poc.demo.servicing.agent.llm.LlmCircuitBreaker;
@@ -70,6 +72,7 @@ public class AgentChatController {
     private final SingleCallSynthesizer synthesizer;
     private final TurnCostEstimator costEstimator;
     private final LlmCircuitBreaker circuitBreaker;
+    private final ConversationMemory memory;
     private final boolean replayMode;
     private final boolean singlePass;
     private final double ahtSavedMinutes;
@@ -88,6 +91,7 @@ public class AgentChatController {
             SingleCallSynthesizer synthesizer,
             TurnCostEstimator costEstimator,
             LlmCircuitBreaker circuitBreaker,
+            ConversationMemory memory,
             @Value("${agent.llm.orchestration:single-pass}") String orchestration,
             @Value("${agent.llm.mode:auto}") String llmMode,
             @Value("${spring.ai.openai.api-key:}") String apiKey,
@@ -105,6 +109,7 @@ public class AgentChatController {
         this.synthesizer = synthesizer;
         this.costEstimator = costEstimator;
         this.circuitBreaker = circuitBreaker;
+        this.memory = memory;
         this.singlePass = !"agentic".equalsIgnoreCase(orchestration);
         this.replayMode = resolveReplay(llmMode, apiKey);
         this.ahtSavedMinutes = ahtSavedMinutes;
@@ -142,25 +147,35 @@ public class AgentChatController {
     private ResponseEntity<AgentTurnReport> runTurn(ChatRequest request, String sessionId) {
         String sanitized = piiSanitizer.sanitize(request.message());
         trace.record("PII_SANITIZATION_PASSED");
+        turnState.setCustomerMessage(sanitized);
         log.info("Turn started: planner={} messageChars={}", replayMode ? "replay" : "llm", sanitized.length());
         trace.record(replayMode ? "PLANNER: DETERMINISTIC_REPLAY"
                 : singlePass ? "PLANNER: LLM_SINGLE_PASS" : "PLANNER: LLM_AGENTIC");
 
         AgentTurnReport.CustomerSnapshot snapshot = snapshot(request.customerId());
 
+        // FR-6.6: earlier exchanges, only when the client sends a conversation id.
+        String conversationId = request.conversationId() == null || request.conversationId().isBlank()
+                ? null : request.conversationId();
+        List<Exchange> history = memory.history(request.customerId(), conversationId);
+        if (!history.isEmpty()) {
+            trace.record("CONVERSATION_HISTORY_LOADED (" + history.size() + " earlier exchange"
+                    + (history.size() == 1 ? ")" : "s)"));
+        }
+
         String response;
         boolean failed = false;
         try {
             if (replayMode) {
-                response = replayAgent.respond(request.customerId(), sanitized);
+                response = replayAgent.respond(request.customerId(), sanitized, history);
             } else if (!singlePass && !circuitBreaker.allowRequest()) {
                 // Provider is failing: skip the model instead of waiting for retries and timeouts.
                 trace.record("LLM_CIRCUIT_OPEN: deterministic answer returned");
-                response = replayAgent.respond(request.customerId(), sanitized);
+                response = replayAgent.respond(request.customerId(), sanitized, history);
             } else if (singlePass) {
-                response = runSinglePass(request.customerId(), sessionId, sanitized);
+                response = runSinglePass(request.customerId(), sessionId, sanitized, history);
             } else {
-                response = runLlm(request.customerId(), sessionId, sanitized);
+                response = runLlm(request.customerId(), sessionId, sanitized, history);
                 response = verifyAgenticAnswer(request.customerId(), sanitized, response);
                 String escalation = replayAgent.ensureEscalationChecked(request.customerId(), sanitized);
                 if (escalation != null) {
@@ -173,7 +188,9 @@ public class AgentChatController {
                 // Agent planner mode: a model call failed or timed out. Java still has the answer.
                 log.warn("Agentic turn failed ({}); returning the deterministic answer", e.toString());
                 trace.record("AGENTIC_FALLBACK: deterministic answer returned");
-                response = replayAgent.respond(request.customerId(), sanitized);
+                boolean escalatedByModel = turnState.isEscalated();
+                response = replayAgent.respond(request.customerId(), sanitized, history);
+                response = DeterministicReplayAgent.reconcileEscalation(response, escalatedByModel);
             } else {
                 log.error("Agent turn failed for customerId={} session={}", request.customerId(), sessionId, e);
                 response = FALLBACK_RESPONSE;
@@ -183,6 +200,7 @@ public class AgentChatController {
 
         List<String> citations = new ArrayList<>(extractCitations(response));
         response = enforceGroundedness(response, citations);
+        memory.append(request.customerId(), conversationId, history, sanitized, response);
 
         String status = failed ? "PARTIAL" : turnState.isEscalated() ? "ESCALATED" : "RESOLVED_AUTONOMOUSLY";
         double ahtSaved = "RESOLVED_AUTONOMOUSLY".equals(status) ? ahtSavedMinutes : 0.0;
@@ -213,9 +231,9 @@ public class AgentChatController {
 
     // -------------------------------------------------------------------------
 
-    private String runLlm(String customerId, String sessionId, String sanitizedMessage) {
+    private String runLlm(String customerId, String sessionId, String sanitizedMessage, List<Exchange> history) {
         String prompt = "Customer ID: " + customerId + "\nSession ID: " + sessionId
-                + "\n\nCustomer message: " + sanitizedMessage;
+                + "\n\n" + ConversationMemory.asPromptBlock(history) + "Customer message: " + sanitizedMessage;
         // Passed as a template parameter so braces in the customer text are not parsed as placeholders.
         // Customer id, session id and message are the dynamic suffix; the system message is the cached prefix.
         ChatResponse chatResponse = chatClient.prompt()
@@ -234,11 +252,12 @@ public class AgentChatController {
      * rewrites it. The rewrite is discarded (draft kept) if it cites an id retrieval did not return or
      * claims an approval the rule engine did not give, so the model cannot change a decision.
      */
-    private String runSinglePass(String customerId, String sessionId, String sanitizedMessage) {
-        String draft = replayAgent.respond(customerId, sanitizedMessage);
+    private String runSinglePass(String customerId, String sessionId, String sanitizedMessage,
+                                 List<Exchange> history) {
+        String draft = replayAgent.respond(customerId, sanitizedMessage, history);
         trace.record("DETERMINISTIC_PLAN_EXECUTED");
         CustomerProfile profile = turnState.cachedProfile(customerId);
-        String rewritten = synthesizer.rewrite(profile, sessionId, sanitizedMessage, draft);
+        String rewritten = synthesizer.rewrite(profile, sessionId, sanitizedMessage, draft, history);
         if (rewritten == null) {
             trace.record("LLM_SYNTHESIS_FALLBACK: deterministic draft returned");
             return draft;

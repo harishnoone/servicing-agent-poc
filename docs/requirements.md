@@ -111,7 +111,7 @@ Every functional requirement maps directly to one or more of the following spons
 
 ### Requirement 6: Sentiment-Aware Escalation & Structured Human Handoff
 
-**FR-6.1:** WHEN the agent detects high customer frustration/churn risk, an SLA breach on an engineering-blocked ticket, or retrieval confidence below 0.72, THE SYSTEM SHALL halt autonomous troubleshooting loops and invoke `escalateWithSummary`.
+**FR-6.1:** WHEN the customer asks to speak to a person, OR the agent detects high customer frustration/churn risk, an SLA breach on an engineering-blocked ticket, or retrieval confidence below 0.72, THE SYSTEM SHALL halt autonomous troubleshooting loops and invoke `escalateWithSummary`.
 
 **FR-6.2:** THE SYSTEM SHALL compile a structured `AgentHandoffCard` JSON payload containing:
 - Verified `CustomerProfile` snapshot (Tier, Tenure, MRR, Open Tickets)
@@ -124,6 +124,8 @@ Every functional requirement maps directly to one or more of the following spons
 **FR-6.4 (No duplicate tickets):** WHEN a ticket is created for a customer who already has an open ticket for the same problem (shared error code, same category and subject ignoring case and punctuation, or same category family and topic), THE SYSTEM SHALL NOT insert a new ticket and SHALL return the existing ticket id with `duplicate=true` and the match reason. The check SHALL read the warehouse (not the Redis cache, which can lag behind CDC) and SHALL be serialised per customer so concurrent requests cannot both create a ticket.
 
 **FR-6.5 (Ticket status inquiry):** WHEN a customer asks about their ticket ("status of my ticket", "any update on my ticket", or a ticket id), THE SYSTEM SHALL list their open tickets (or the named one) with subject, status and SLA time left or hours breached, and SHALL escalate a breached ticket per FR-6.1. In agent planner mode, IF the model's plan does not run the escalation check, THEN THE SYSTEM SHALL run it after the turn, so escalation never depends on the model.
+
+**FR-6.6 (Multi-turn conversation):** WHERE the client sends a `conversationId`, THE SYSTEM SHALL keep the last 3 exchanges of that conversation (per customer, 30-minute sliding expiry) and use them on the next turn: as earlier context in the model prompt in LLM and agent planner mode, and in deterministic routing, where a follow-up with no topic of its own ("Why not? Can you make an exception?") keeps the earlier topic and "yes" accepts a supervisor review offered in the previous reply. WHEN the customer asks for a person ("talk to a human", "a real person", "a representative"), THE SYSTEM SHALL escalate in every mode with `CUSTOMER_REQUESTED_HUMAN` as the first reason on the handoff card and the earlier conversation in its attempted steps. History SHALL never be shared across customers, and facts in a reply SHALL still come from the current turn's tools.
 
 ---
 
@@ -218,6 +220,7 @@ Non-functional targets (to be confirmed by measurement): added latency per gated
 | 2026-11-19 | Update | Compose file name (`compose.yaml`); implementation status of every requirement is tracked in design.md §8 |
 | 2026-11-21 | Scope | Added decision-model screening/triage/grading to Out-of-Scope as a production scale-up item, per design.md §6. Added §6 Future Requirements (FR-F1 to FR-F6, planned only), per design.md §9 |
 | 2026-11-24 | Scope | Added Requirement 9 (FR-9.1 to FR-9.3): actions through Kafka, read-only source data, idempotent system-of-record writer; implemented, verified per design.md §8 |
+| 2026-11-24 | Scope | Added FR-6.6 (multi-turn conversation memory; customer request for a person escalates in every mode) and the request-for-a-person trigger in FR-6.1; implemented, verified per design.md A8 |
 | 2026-11-23 | Scope | Added FR-6.5 (ticket status inquiry; escalation check enforced by Java in agent planner mode); implemented, verified per design.md §8 |
 | 2026-11-21 | Scope | Added FR-3.10 (multi-step billing investigation with fact verification); implemented, verified per design.md §8 |
 | 2026-11-21 | Scope | Added FR-1.5 (complete profile regardless of CDC event order or eviction); implemented, verified in tests per design.md §8 | (existing-ticket recognition), FR-6.4 (no duplicate tickets for the same problem) and FR-7.5 (CDC consume logging); implemented and verified per design.md §8 |

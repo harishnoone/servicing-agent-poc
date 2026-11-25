@@ -31,6 +31,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -93,19 +94,19 @@ class SinglePassModeTest {
 
     @Test
     void groundedRewriteIsReturnedAndModelIsCalledOnce() throws Exception {
-        when(synthesizer.rewrite(any(), anyString(), anyString(), anyString())).thenReturn(
+        when(synthesizer.rewrite(any(), anyString(), anyString(), anyString(), anyList())).thenReturn(
                 "Good news Elena, your $45.00 late fee is waived under [billing_waivers_policy.md#sec-4.2].");
         JsonNode r = chat("cust_123", "Can you waive my $45 late fee?");
         assertThat(r.path("finalResponse").asText()).startsWith("Good news Elena");
         assertThat(r.at("/kpiImpact/deflectionStatus").asText()).isEqualTo("RESOLVED_AUTONOMOUSLY");
         assertThat(events(r)).contains("PLANNER: LLM_SINGLE_PASS", "DETERMINISTIC_PLAN_EXECUTED",
                 "LLM_SYNTHESIS_ACCEPTED", "TOOL_CALL: evaluateWaiverRules -> APPROVED");
-        verify(synthesizer, times(1)).rewrite(any(), anyString(), anyString(), anyString());
+        verify(synthesizer, times(1)).rewrite(any(), anyString(), anyString(), anyString(), anyList());
     }
 
     @Test
     void providerFailureFallsBackToDeterministicDraftNotPartial() throws Exception {
-        when(synthesizer.rewrite(any(), anyString(), anyString(), anyString())).thenReturn(null);
+        when(synthesizer.rewrite(any(), anyString(), anyString(), anyString(), anyList())).thenReturn(null);
         JsonNode r = chat("cust_456", "My gateway is throwing ERR-504-GW, what should I do?");
         assertThat(r.at("/kpiImpact/deflectionStatus").asText()).isEqualTo("ESCALATED");
         assertThat(r.path("handoffCard").path("detectedSentiment").asText()).isEqualTo("SLA_BREACH");
@@ -115,7 +116,7 @@ class SinglePassModeTest {
 
     @Test
     void rewriteWithAmountNotInVerifiedDraftIsRejected() throws Exception {
-        when(synthesizer.rewrite(any(), anyString(), anyString(), anyString()))
+        when(synthesizer.rewrite(any(), anyString(), anyString(), anyString(), anyList()))
                 .thenReturn("Your $45.00 late fee is waived under [billing_waivers_policy.md#sec-4.2], plus a $20 goodwill credit.");
         JsonNode r = chat("cust_123", "Can you waive my $45 late fee?");
         assertThat(r.path("finalResponse").asText()).doesNotContain("$20");
@@ -124,7 +125,7 @@ class SinglePassModeTest {
 
     @Test
     void rewriteWithUnknownCitationIsRejected() throws Exception {
-        when(synthesizer.rewrite(any(), anyString(), anyString(), anyString()))
+        when(synthesizer.rewrite(any(), anyString(), anyString(), anyString(), anyList()))
                 .thenReturn("Per [made_up_policy.md#sec-9] you get a full refund.");
         JsonNode r = chat("cust_123", "Can you waive my $45 late fee?");
         assertThat(r.path("finalResponse").asText()).doesNotContain("made_up_policy").contains("[billing_waivers_policy.md#sec-4.2]");
@@ -133,7 +134,7 @@ class SinglePassModeTest {
 
     @Test
     void rewriteClaimingUnbackedApprovalIsRejected() throws Exception {
-        when(synthesizer.rewrite(any(), anyString(), anyString(), anyString()))
+        when(synthesizer.rewrite(any(), anyString(), anyString(), anyString(), anyList()))
                 .thenReturn("Your $60 fee has been approved for a waiver [billing_waivers_policy.md#sec-4.2].");
         JsonNode r = chat("cust_123", "Can you waive my $60 late fee?");
         assertThat(events(r)).contains("TOOL_CALL: evaluateWaiverRules -> FEE_TOO_HIGH")

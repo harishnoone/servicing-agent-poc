@@ -124,6 +124,10 @@ agent:
       # Maximum PRIOR waivers in the rolling 12 months for a new waiver to be allowed.
       # Policy section 4.2 requires waivers_used_12m = 0, so this is 0.
       max-waivers-per-year: 0
+  # Conversation memory (FR-6.6): last N exchanges per customer + conversationId, in Redis with a sliding TTL.
+  memory:
+    max-exchanges: ${AGENT_MEMORY_MAX_EXCHANGES:3}
+    ttl-minutes: ${AGENT_MEMORY_TTL_MINUTES:30}
   escalation:
     min-retrieval-confidence: 0.72
   retrieval:

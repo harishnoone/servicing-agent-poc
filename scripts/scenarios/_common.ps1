@@ -28,12 +28,14 @@ function Api([string]$Method, [string]$Path, $Body = $null) {
     if ($text) { $text | ConvertFrom-Json } else { $null }
 }
 
-function Chat([string]$customerId, [string]$message) {
+function Chat([string]$customerId, [string]$message, [string]$conversationId = "") {
     $pace = 0; [void][int]::TryParse($env:CHAT_PACE_SECONDS, [ref]$pace)
     $wait = $pace - ([DateTime]::UtcNow - $script:LastChatAt).TotalSeconds
     if ($pace -gt 0 -and $wait -gt 0) { Start-Sleep -Milliseconds ([int]($wait * 1000)) }
     Write-Host "`n  [$customerId] $message" -ForegroundColor White
-    $r = Api POST "/api/agent/chat" @{ customerId = $customerId; message = $message }
+    $body = @{ customerId = $customerId; message = $message }
+    if ($conversationId) { $body.conversationId = $conversationId }
+    $r = Api POST "/api/agent/chat" $body
     $script:LastChatAt = [DateTime]::UtcNow
     Show-Turn $r
     return $r

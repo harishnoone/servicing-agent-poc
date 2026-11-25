@@ -24,6 +24,8 @@ public final class FakeRedis {
         when(ops.get(anyString())).thenAnswer(i -> store.get(i.<String>getArgument(0)));
         doAnswer(i -> { store.put(i.getArgument(0), i.getArgument(1)); return null; })
                 .when(ops).set(anyString(), anyString());
+        doAnswer(i -> { store.put(i.getArgument(0), i.getArgument(1)); return null; })
+                .when(ops).set(anyString(), anyString(), any(Duration.class));
         when(ops.setIfAbsent(anyString(), anyString()))
                 .thenAnswer(i -> store.putIfAbsent(i.getArgument(0), i.getArgument(1)) == null);
         when(ops.setIfAbsent(anyString(), anyString(), any(Duration.class)))

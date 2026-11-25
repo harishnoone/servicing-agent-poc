@@ -96,6 +96,15 @@ class DemoScenariosTest {
         return mapper.readTree(json);
     }
 
+    private JsonNode chatIn(String conversationId, String customerId, String message) throws Exception {
+        String body = mapper.writeValueAsString(
+                Map.of("customerId", customerId, "message", message, "conversationId", conversationId));
+        String json = mvc.perform(post("/api/agent/chat").contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        return mapper.readTree(json);
+    }
+
     private static List<String> events(JsonNode report) {
         return report.path("agentReasoningTrace").findValuesAsText("event");
     }
@@ -328,6 +337,50 @@ class DemoScenariosTest {
     void ticketStatusWithNoOpenTicketsSaysSo() throws Exception {
         JsonNode r = chat("cust_789", "Is there any update on my ticket?");
         assertThat(r.path("finalResponse").asText()).contains("no open support tickets");
+    }
+
+    /** FR-6.6 scenario 13a: an unhappy customer asks for a person after a denial; escalated in every mode. */
+    @Test
+    void scenario13_unhappyCustomerAsksForAPersonAfterDenial() throws Exception {
+        JsonNode first = chatIn("conv-13a", "cust_789", "Can you waive my late fee?");
+        assertThat(first.path("finalResponse").asText()).contains("cannot waive", "ask a supervisor");
+        assertThat(first.at("/kpiImpact/deflectionStatus").asText()).isEqualTo("RESOLVED_AUTONOMOUSLY");
+
+        JsonNode second = chatIn("conv-13a", "cust_789", "That doesn't help me. Can I please speak to a real person?");
+        assertThat(events(second)).contains("CONVERSATION_HISTORY_LOADED (1 earlier exchange)");
+        assertThat(second.at("/kpiImpact/deflectionStatus").asText()).isEqualTo("ESCALATED");
+        assertThat(second.at("/handoffCard/detectedSentiment").asText()).isEqualTo("CUSTOMER_REQUESTED_HUMAN");
+        assertThat(second.at("/handoffCard/classifiedIntent").asText()).isEqualTo("BILLING_WAIVER");
+        assertThat(mapper.convertValue(second.at("/handoffCard/attemptedSteps"), List.class))
+                .anyMatch(s -> s.toString().contains("Can you waive my late fee?"));
+        assertThat(second.path("finalResponse").asText()).contains("Tier-2 specialist")
+                .doesNotContain("Here is what I see on your account");
+    }
+
+    /** FR-6.6 scenario 13b: policy back-and-forth; a follow-up with no topic keeps the earlier one. */
+    @Test
+    void scenario13_policyFollowUpKeepsTheTopic() throws Exception {
+        chatIn("conv-13b", "cust_789", "Can you waive my late fee?");
+
+        JsonNode followUp = chatIn("conv-13b", "cust_789", "Why not? Can you make an exception?");
+        assertThat(events(followUp)).contains("CONVERSATION_FOLLOW_UP: routed with the earlier topic");
+        assertThat(events(followUp)).anyMatch(e -> e.startsWith("TOOL_CALL: evaluateWaiverRules"));
+        assertThat(followUp.path("finalResponse").asText()).contains("Standard", "ask a supervisor");
+
+        JsonNode yes = chatIn("conv-13b", "cust_789", "Yes please");
+        assertThat(events(yes)).contains("CONVERSATION_FOLLOW_UP: customer accepted supervisor review");
+        assertThat(yes.at("/kpiImpact/deflectionStatus").asText()).isEqualTo("ESCALATED");
+        assertThat(yes.path("finalResponse").asText()).contains("asked a supervisor to review it");
+    }
+
+    /** Memory is keyed by customer: the same conversation id never leaks another customer's history. */
+    @Test
+    void conversationMemoryIsScopedToTheCustomer() throws Exception {
+        chatIn("conv-shared", "cust_789", "Can you waive my late fee?");
+        JsonNode other = chatIn("conv-shared", "cust_123", "Why not?");
+        assertThat(events(other)).noneMatch(e -> e.startsWith("CONVERSATION_"));
+        JsonNode noId = chat("cust_789", "Yes please");
+        assertThat(events(noId)).noneMatch(e -> e.startsWith("CONVERSATION_"));
     }
 
     @Test

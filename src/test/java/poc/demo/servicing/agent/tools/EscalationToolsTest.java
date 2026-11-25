@@ -54,6 +54,31 @@ class EscalationToolsTest {
         assertThat(turnState.isEscalated()).isTrue();
     }
 
+    /** FR-6.6: a request for a person escalates on its own and is the first reason on the card. */
+    @Test
+    void customerAskingForAPersonEscalatesAndLeadsTheCard() {
+        givenTickets();
+        turnState.recordRetrieval(List.of("billing_waivers_policy.md#sec-4.2"), 0.65); // also low confidence
+
+        var d = tools.escalateWithSummary("c1", "Can I please speak to a real person?", "BILLING_WAIVER", List.of(), false);
+
+        assertThat(d.escalated()).isTrue();
+        assertThat(d.reason()).isEqualTo("CUSTOMER_REQUESTED_HUMAN,LOW_RETRIEVAL_CONFIDENCE");
+        assertThat(d.handoffCard().detectedSentiment()).isEqualTo("CUSTOMER_REQUESTED_HUMAN");
+        assertThat(d.handoffCard().recommendedNextAction()).startsWith("Customer asked to speak to a person");
+    }
+
+    @Test
+    void humanRequestPhrasesMatchWholeWordsOnly() {
+        assertThat(EscalationTools.isHumanRequest("I want to talk to a human.")).isTrue();
+        assertThat(EscalationTools.isHumanRequest("Could you connect me with a person to review it?")).isTrue();
+        assertThat(EscalationTools.isHumanRequest("Get me a representative")).isTrue();
+        assertThat(EscalationTools.isHumanRequest("Please ask a supervisor")).isTrue();
+        assertThat(EscalationTools.isHumanRequest("Is this a personal account?")).isFalse();
+        assertThat(EscalationTools.isHumanRequest("What does humanitarian relief cover?")).isFalse();
+        assertThat(EscalationTools.isHumanRequest("Can you waive my late fee?")).isFalse();
+    }
+
     @Test
     void postgresTextTimestampIsParsed() {
         assertThat(EscalationTools.parseInstant("2025-06-01 13:00:00+00")).isEqualTo(Instant.parse("2025-06-01T13:00:00Z"));

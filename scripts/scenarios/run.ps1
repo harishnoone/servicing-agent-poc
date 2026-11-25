@@ -6,7 +6,7 @@
   .\scripts\scenarios\run.ps1              # menu
   .\scripts\scenarios\run.ps1 5            # one scenario by number
   .\scripts\scenarios\run.ps1 2 3 5        # several, in order
-  .\scripts\scenarios\run.ps1 all          # 1-12 in order (10 is live-LLM only and reports SKIPPED offline)
+  .\scripts\scenarios\run.ps1 all          # 1-13 in order (10 is live-LLM only and reports SKIPPED offline)
 #>
 param([Parameter(ValueFromRemainingArguments = $true)] [string[]] $Pick)
 

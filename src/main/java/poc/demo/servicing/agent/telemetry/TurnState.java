@@ -32,6 +32,11 @@ public class TurnState {
     private Double lowestRetrievalConfidence;
     private boolean retrievalPerformed;
     private String lastWaiverReasonCode;
+    private String customerMessage;
+
+    /** The sanitized customer message for this turn, as received (not as a model paraphrased it). */
+    public String getCustomerMessage() { return customerMessage; }
+    public void setCustomerMessage(String customerMessage) { this.customerMessage = customerMessage; }
 
     private final Map<String, CustomerProfile> profiles = new HashMap<>();
     private final Map<String, String> profileSources = new HashMap<>();

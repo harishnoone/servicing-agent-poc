@@ -1,5 +1,6 @@
 package poc.demo.servicing.agent.replay;
 
+import poc.demo.servicing.agent.memory.ConversationMemory.Exchange;
 import poc.demo.servicing.agent.model.CustomerProfile;
 import poc.demo.servicing.agent.model.WaiverEvaluationResult;
 import poc.demo.servicing.agent.telemetry.TraceCollector;
@@ -71,7 +72,80 @@ public class DeterministicReplayAgent {
         this.trace = trace;
     }
 
+    private static final String SUPERVISOR_OFFER = "I can ask a supervisor to review it";
+    private static final Pattern AFFIRMATIVE = Pattern.compile(
+            "^\\s*(yes|yeah|yep|sure|ok|okay|please|please do|go ahead|do it|do that)\\b.*", Pattern.CASE_INSENSITIVE);
+
     public String respond(String customerId, String message) {
+        return respond(customerId, message, List.of());
+    }
+
+    /**
+     * Multi-turn entry point (FR-6.6). Checked in order: the customer asks for a person (hand off in every
+     * mode); the customer says yes to the supervisor review offered in the previous reply; a follow-up with no
+     * topic of its own ("Why not? Can you make an exception?") is routed with the most recent earlier customer
+     * message that had one. Otherwise the message is handled on its own, as in a single-turn conversation.
+     */
+    public String respond(String customerId, String message, List<Exchange> history) {
+        if (EscalationTools.isHumanRequest(message)) {
+            return humanHandoff(customerTools.getCustomerState(customerId), message, history, false);
+        }
+        if (!history.isEmpty() && history.get(history.size() - 1).agent().contains(SUPERVISOR_OFFER)
+                && message.length() <= 60 && AFFIRMATIVE.matcher(message).matches()) {
+            trace.record("CONVERSATION_FOLLOW_UP: customer accepted supervisor review");
+            return humanHandoff(customerTools.getCustomerState(customerId), message, history, true);
+        }
+        if (!hasTopic(message)) {
+            for (int i = history.size() - 1; i >= 0; i--) {
+                String earlier = history.get(i).customer();
+                if (hasTopic(earlier) && !EscalationTools.isHumanRequest(earlier)) {
+                    trace.record("CONVERSATION_FOLLOW_UP: routed with the earlier topic");
+                    return route(customerId, earlier + " " + message);
+                }
+            }
+        }
+        return route(customerId, message);
+    }
+
+    /** @return true if the message has an intent the planner can route (billing, policy, technical, status) */
+    public static boolean hasTopic(String message) {
+        String lower = message.toLowerCase();
+        return BILLING_WORDS.stream().anyMatch(lower::contains) || POLICY_WORDS.stream().anyMatch(lower::contains)
+                || TECH_WORDS.stream().anyMatch(lower::contains)
+                || INVESTIGATION_WORDS.stream().anyMatch(lower::contains) || isStatusQuestion(lower, message);
+    }
+
+    /** Hand-off the customer asked for: no answer attempt, the Tier-2 card carries the conversation so far. */
+    private String humanHandoff(CustomerProfile profile, String message, List<Exchange> history,
+                                boolean acceptedSupervisorOffer) {
+        List<String> steps = new ArrayList<>(List.of("Loaded customer profile"));
+        TicketMatch existing = checkExistingTicket(profile, message, steps);
+        for (Exchange e : history) {
+            steps.add("Earlier in this conversation, customer: \"" + e.customer() + "\"");
+        }
+        steps.add(acceptedSupervisorOffer ? "Customer accepted the offer of a supervisor review"
+                : "Customer asked to speak to a person");
+        String intent = history.stream().map(Exchange::customer).filter(DeterministicReplayAgent::hasTopic)
+                .reduce((a, b) -> b).map(DeterministicReplayAgent::intentOf).orElse("HUMAN_REQUESTED");
+        EscalationTools.EscalationDecision esc = escalationTools.escalateWithSummary(
+                profile.customerId(), message, intent, steps, acceptedSupervisorOffer);
+        String handoff = acceptedSupervisorOffer
+                ? "I have asked a supervisor to review it. They will contact you with the full context, so you "
+                        + "will not need to repeat yourself."
+                : escalationSentence(esc);
+        return (existingTicketSentence(existing) + handoff).strip();
+    }
+
+    private static String intentOf(String message) {
+        String lower = message.toLowerCase();
+        if (TECH_WORDS.stream().anyMatch(lower::contains)) return "TECHNICAL_OUTAGE";
+        if (POLICY_WORDS.stream().anyMatch(lower::contains)) return "POLICY_QUESTION";
+        if (BILLING_WORDS.stream().anyMatch(lower::contains)) return "BILLING_WAIVER";
+        if (isStatusQuestion(lower, message)) return "TICKET_STATUS";
+        return "BILLING_INVESTIGATION";
+    }
+
+    private String route(String customerId, String message) {
         CustomerProfile profile = customerTools.getCustomerState(customerId);
         String lower = message.toLowerCase();
         boolean policyQuestion = POLICY_WORDS.stream().anyMatch(lower::contains) && !lower.contains("err-");
@@ -386,13 +460,30 @@ public class DeterministicReplayAgent {
      * confidence itself) and returns the sentence to append, or {@code null} when no escalation is needed.
      */
     public String ensureEscalationChecked(String customerId, String message) {
-        if (turnState.getToolsExecuted().contains("escalateWithSummary")) {
+        boolean ran = turnState.getToolsExecuted().contains("escalateWithSummary");
+        // A request for a person is honoured even if the model checked escalation and decided against it.
+        boolean humanRequestMissed = EscalationTools.isHumanRequest(message) && !turnState.isEscalated();
+        if (ran && !humanRequestMissed) {
             return null;
         }
         EscalationTools.EscalationDecision esc = escalationTools.escalateWithSummary(
                 customerId, message, "AGENT_PLANNED", List.of("Escalation check enforced by Java after the model's plan"), false);
         trace.record("AGENTIC_ESCALATION_ENFORCED: " + esc.reason());
         return esc.escalated() ? escalationSentence(esc) : null;
+    }
+
+    /**
+     * Agent planner fallback: when the model already escalated before its last call failed, the deterministic
+     * reply must say so instead of offering a supervisor review that has already been requested.
+     */
+    public static String reconcileEscalation(String reply, boolean escalatedByModel) {
+        if (!escalatedByModel || reply.contains("Tier-2") || reply.contains("asked a supervisor")) {
+            return reply;
+        }
+        String offer = " If you would like, " + SUPERVISOR_OFFER + ".";
+        return reply.replace(offer, "").strip()
+                + " I have passed your case to a Tier-2 specialist with the full context, so you will not need to "
+                + "repeat yourself.";
     }
 
     /** FR-6.3: runs the existing-ticket check and records it as a verified step for the handoff card. */
@@ -417,6 +508,10 @@ public class DeterministicReplayAgent {
     /** Customer-facing sentence that matches what actually triggered the escalation. */
     private static String escalationSentence(EscalationTools.EscalationDecision esc) {
         String r = esc.reason();
+        if (r.startsWith("CUSTOMER_REQUESTED_HUMAN")) {
+            return "Of course. I have passed your conversation to a Tier-2 specialist, who will contact you with "
+                    + "the full context, so you will not need to repeat yourself.";
+        }
         if (r.contains("SLA_BREACH")) {
             return "Your ticket is past its SLA, so I have escalated it to a Tier-2 engineer with the account "
                     + "snapshot, steps taken and policy references attached.";

@@ -115,7 +115,7 @@ A turn's response (trimmed):
 |---|---|
 | `cust_123` Elena Vance | Waiver `APPROVED`, applied downstream: invoice `WAIVED` in Redis via CDC; ticket status within SLA |
 | `cust_456` Marcus Sterling | ERR-504-GW fix, superseded legacy advice flagged, `SLA_BREACH` escalation (handoff card + escalation action); follow-up on TKT-8841 instead of a duplicate ticket |
-| `cust_789` Jordan Blake | `TIER_INELIGIBLE`, clean denial |
+| `cust_789` Jordan Blake | `TIER_INELIGIBLE`, clean denial; multi-turn: "Why not?" keeps the topic, "speak to a real person" escalates (scenario 13) |
 | `cust_222` Noah Patel | Waiver `APPROVED` |
 | `cust_321` Priya Nair | `TENURE_TOO_SHORT`, escalated for supervisor review |
 | `cust_654` Diego Alvarez | `FEE_TOO_HIGH` ($75) |
@@ -358,6 +358,8 @@ Requirement ids in code comments (e.g. `FR-3.8`) refer to `docs/requirements.md`
 - The LLM path has been run against Gemini only, not OpenAI.
 - With a model in the loop a turn takes about 1.5 to 5 s in LLM mode and 4 to 47 s in agent planner mode (provider load varies); the <1.5 s P95 target is met only by deterministic mode (2 to 65 ms). Streaming the reply is the next step.
 - Prompt-caching savings are estimated, not measured: Gemini's OpenAI-compatible endpoint does not report cached tokens, so `projectedCachingSavingPercent` is a ceiling, and the default prices are placeholders.
+- Conversation memory is short-term: the last 3 exchanges per customer and `conversationId`, kept 30 minutes in Redis. There is no long-term case memory, and turns without a `conversationId` stand alone.
+- Agent planner mode caps each model call at 30 s but not the whole turn, so a slow provider can push a turn past the 60 s SLA (111 s measured on 2026-11-24).
 - Deterministic and LLM mode use a keyword-based tool plan; vague questions ("any news?") get the general account summary, which still names open tickets and escalates breaches. Agent planner mode handles any phrasing, more slowly.
 - The vector half of hybrid search is a local character-trigram embedding so the stack runs offline; swap `KnowledgeRetrievalTools.embed()` for a real embedding model.
 - KPI counters are in memory; "deflection" means resolved without escalation, not a measured re-contact rate.

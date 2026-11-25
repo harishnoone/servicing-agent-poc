@@ -1,5 +1,7 @@
 package poc.demo.servicing.agent.llm;
 
+import poc.demo.servicing.agent.memory.ConversationMemory;
+import poc.demo.servicing.agent.memory.ConversationMemory.Exchange;
 import poc.demo.servicing.agent.model.CustomerProfile;
 import poc.demo.servicing.agent.prompt.CacheUsageRecorder;
 import poc.demo.servicing.agent.telemetry.TraceCollector;
@@ -16,6 +18,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.context.request.RequestAttributes;
 import org.springframework.web.context.request.RequestContextHolder;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -66,11 +69,17 @@ public class SingleCallSynthesizer {
 
     /** @return the model's reply, or {@code null} if it failed or exceeded the timeout */
     public String rewrite(CustomerProfile profile, String sessionId, String message, String draft) {
+        return rewrite(profile, sessionId, message, draft, List.of());
+    }
+
+    /** As above, with earlier exchanges of the conversation added to the prompt (FR-6.6). */
+    public String rewrite(CustomerProfile profile, String sessionId, String message, String draft,
+                          List<Exchange> history) {
         if (!circuitBreaker.allowRequest()) {
             trace.record("LLM_CIRCUIT_OPEN: model call skipped");
             return null;
         }
-        String facts = facts(profile, sessionId, message, draft);
+        String facts = ConversationMemory.asPromptBlock(history) + facts(profile, sessionId, message, draft);
         RequestAttributes attrs = RequestContextHolder.getRequestAttributes();
         Map<String, String> mdc = MDC.getCopyOfContextMap();
         CompletableFuture<String> call = CompletableFuture.supplyAsync(() -> {

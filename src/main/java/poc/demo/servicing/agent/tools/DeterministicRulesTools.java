@@ -80,6 +80,13 @@ public class DeterministicRulesTools {
         long start = System.currentTimeMillis();
         CustomerProfile profile = customerContextTools.loadProfile(customerId);
         WaiverEvaluationResult result = evaluate(profile, requestedWaiverAmount);
+        // The amount comes from the caller (in agent planner mode, the model). An approval is only applied to a
+        // fee that exists: found live, the model asked to waive $50.00 on an account with no late fee at all.
+        if (result.eligible() && !hasUnpaidLateFee(profile, requestedWaiverAmount)) {
+            result = deny("FEE_NOT_ON_LEDGER", String.format(
+                    "There is no unpaid late fee of $%s on the account; only a late fee on the ledger can be "
+                            + "waived per %s.", money(requestedWaiverAmount), POLICY_CITATION));
+        }
         if (result.eligible()) {
             emitApprovalAuditEvent(customerId, requestedWaiverAmount, result);
         }
@@ -130,6 +137,11 @@ public class DeterministicRulesTools {
         } catch (Exception e) {
             log.warn("Could not publish waiver action for {}: {}", customerId, e.getMessage());
         }
+    }
+
+    private static boolean hasUnpaidLateFee(CustomerProfile profile, BigDecimal amount) {
+        return profile.recentCharges().stream().anyMatch(c -> "LATE_FEE".equalsIgnoreCase(c.chargeType())
+                && "UNPAID".equalsIgnoreCase(c.status()) && c.amount().compareTo(amount) == 0);
     }
 
     /** Pure rule evaluation, separated from tracing so it is trivially unit-testable. */

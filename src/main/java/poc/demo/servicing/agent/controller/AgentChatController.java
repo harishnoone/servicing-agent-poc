@@ -1,5 +1,6 @@
 package poc.demo.servicing.agent.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import poc.demo.servicing.agent.memory.ConversationMemory;
 import poc.demo.servicing.agent.memory.ConversationMemory.Exchange;
 import poc.demo.servicing.agent.dlt.DltService;
@@ -73,6 +74,7 @@ public class AgentChatController {
     private final TurnCostEstimator costEstimator;
     private final LlmCircuitBreaker circuitBreaker;
     private final ConversationMemory memory;
+    private final ObjectMapper mapper;
     private final boolean replayMode;
     private final boolean singlePass;
     private final double ahtSavedMinutes;
@@ -92,6 +94,7 @@ public class AgentChatController {
             TurnCostEstimator costEstimator,
             LlmCircuitBreaker circuitBreaker,
             ConversationMemory memory,
+            ObjectMapper mapper,
             @Value("${agent.llm.orchestration:single-pass}") String orchestration,
             @Value("${agent.llm.mode:auto}") String llmMode,
             @Value("${spring.ai.openai.api-key:}") String apiKey,
@@ -110,6 +113,7 @@ public class AgentChatController {
         this.costEstimator = costEstimator;
         this.circuitBreaker = circuitBreaker;
         this.memory = memory;
+        this.mapper = mapper;
         this.singlePass = !"agentic".equalsIgnoreCase(orchestration);
         this.replayMode = resolveReplay(llmMode, apiKey);
         this.ahtSavedMinutes = ahtSavedMinutes;
@@ -237,8 +241,9 @@ public class AgentChatController {
     // -------------------------------------------------------------------------
 
     private String runLlm(String customerId, String sessionId, String sanitizedMessage, List<Exchange> history) {
-        String prompt = "Customer ID: " + customerId + "\nSession ID: " + sessionId
-                + "\n\n" + ConversationMemory.asPromptBlock(history) + "Customer message: " + sanitizedMessage;
+        String prompt = "Customer ID: " + customerId + "\nSession ID: " + sessionId + "\n\n"
+                + profileBlock(customerId) + ConversationMemory.asPromptBlock(history)
+                + "Customer message: " + sanitizedMessage;
         // Passed as a template parameter so braces in the customer text are not parsed as placeholders.
         // Customer id, session id and message are the dynamic suffix; the system message is the cached prefix.
         ChatResponse chatResponse = chatClient.prompt()
@@ -250,6 +255,26 @@ public class AgentChatController {
         String content = chatResponse == null || chatResponse.getResult() == null
                 ? null : chatResponse.getResult().getOutput().getText();
         return content == null ? "" : content;
+    }
+
+    /**
+     * Agent planner: the profile loaded for this turn's snapshot goes in the prompt, so the model's first round
+     * trip is not spent on getCustomerState. It is the same data that tool would return, read in this turn, and
+     * it sits in the dynamic suffix, so the cached prefix is unchanged.
+     */
+    private String profileBlock(String customerId) {
+        try {
+            CustomerProfile p = turnState.cachedProfile(customerId);
+            if (p == null) {
+                p = customerContextTools.loadProfile(customerId);
+            }
+            trace.record("CONTEXT_PREFETCHED: customer profile in the prompt (getCustomerState round trip skipped)");
+            return "Verified customer profile (loaded this turn; same data as getCustomerState):\n"
+                    + mapper.writeValueAsString(p) + "\n\n";
+        } catch (Exception e) {
+            log.warn("Could not prefetch the customer profile; the model will call getCustomerState: {}", e.toString());
+            return "";
+        }
     }
 
     /**

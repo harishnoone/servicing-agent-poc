@@ -252,7 +252,7 @@ AGENT_LLM_REASONING_EFFORT=low
 | Value | What happens | Model calls per turn |
 |---|---|---|
 | `single-pass` (default) | Java runs the tool plan, then one model call with no tools writes the reply. The deterministic draft is returned instead if the call takes longer than 8 s, fails, is cut off, cites an id retrieval did not return, drops the citations, or claims an approval the rule engine did not give | 1 |
-| `agentic` | The model plans and calls the `@Tool` methods itself | 2 to 5, each a full round trip |
+| `agentic` | The model plans and calls the `@Tool` methods itself. The profile is prefetched into the prompt, independent tools are requested in one step, and Java runs the escalation check | Usually 2 (was 2 to 7), each a full round trip |
 
 **Model choice.** Measured in the containerized stack: Flash-Lite in single-pass took 1.4 to 2.7 s per turn. `gemini-3.1-pro-preview` took 4 to 8 s in single-pass (3 of 4 turns hit the timeout) and 19 to 105 s in agentic mode. The model only words decisions Java has already made, so a larger model adds latency without adding correctness. The full comparison, with every parameter tested, is in [`docs/design.md`](docs/design.md) §6 ("Why Gemini 3.1 Flash-Lite").
 

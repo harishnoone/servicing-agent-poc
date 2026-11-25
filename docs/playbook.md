@@ -242,7 +242,7 @@ Then `docker compose up -d --force-recreate servicing-agent-app` and check the l
 
 **Full live rehearsal:** `$env:GEMINI_API_KEY='<key>'` then `powershell -ExecutionPolicy Bypass -File scripts/demo-smoke-live.ps1`. It recreates the app in live mode with the settings above (key passed to Docker for that command only), runs the same checks as `demo-smoke.ps1` with a 16000 ms per-turn budget (15 s synthesis timeout, 2048 output tokens) and 8 s pacing, prints how many replies the model wrote versus fell back to the draft, then restores offline mode. Add `-KeepLive` to stay live for the demo. On 2026-11-21 it passed 30/30. Per-turn times varied with Google's load: one run had 1.5 to 2.0 s turns with 4 of 6 replies from the model; an earlier run the same day saw 3.3 to 8 s, a 503 "high demand" and 4 of 6 timeouts. Rehearse at the time of day you will present.
 
-`AGENT_LLM_ORCHESTRATION=agentic` is agent planner mode (below). It makes 3 to 5 model calls per turn, so present it as a deliberate segment, not as the default live mode.
+`AGENT_LLM_ORCHESTRATION=agentic` is agent planner mode (below). It usually makes 2 model calls per turn (one that calls the tools, one that answers; it was 4 to 7 before the profile was prefetched), so present it as a deliberate segment, not as the default live mode. Each call can still take 30 to 55 s when Gemini is loaded.
 
 **Which mode to present.** Deterministic mode is the safe default (1.5 s per turn). LLM mode is the live demo: the model connects the dots and writes the answer, with Java checking every word (16 s budget). Agent planner mode shows the model choosing the tools itself (60 s budget). The trace shows the model's tool calls and `AGENTIC_VERIFIED`. See `design.md` §4.9.
 
@@ -301,7 +301,7 @@ AGENT_LLM_ORCHESTRATION=single-pass
 AGENT_LLM_REASONING_EFFORT=low
 OPENAI_MODEL=gemini-3.1-flash-lite
 AGENT_LLM_FALLBACK_MODELS=gemini-3.5-flash
-AGENT_LLM_SYNTHESIS_TIMEOUT_MS=30000
+AGENT_LLM_SYNTHESIS_TIMEOUT_MS=60000
 AGENT_LLM_SYNTHESIS_MAX_TOKENS=2048
 AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS=60
 ```
@@ -317,6 +317,7 @@ AGENT_LLM_REASONING_EFFORT=low
 OPENAI_MODEL=gemini-3.6-flash
 AGENT_LLM_FALLBACK_MODELS=gemini-3.5-flash
 AGENT_LLM_HTTP_READ_TIMEOUT_SECONDS=60
+AGENT_LLM_SYNTHESIS_TIMEOUT_MS=60000
 ```
 
 | Mode | When the model is busy (503) | When it is slow or fails |

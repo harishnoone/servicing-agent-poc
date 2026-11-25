@@ -97,7 +97,7 @@ Every functional requirement maps directly to one or more of the following spons
 
 ### Requirement 5: Deterministic Business Rule & Eligibility Guardrails
 
-**FR-5.1:** THE SYSTEM SHALL NOT delegate financial eligibility calculations, fee waiver approvals, or SLA credit math to LLM probabilistic generation.
+**FR-5.1:** THE SYSTEM SHALL NOT delegate financial eligibility calculations, fee waiver approvals, or SLA credit math to LLM probabilistic generation. IF a waiver is requested for an amount that is not an unpaid late fee on the customer's ledger, THEN THE SYSTEM SHALL deny it (`FEE_NOT_ON_LEDGER`) and publish no action, whoever supplied the amount.
 
 **FR-5.2:** WHEN a customer requests a late-fee waiver or billing adjustment, THE SYSTEM SHALL invoke the deterministic Java service `DeterministicRules.evaluateLateFeeWaiver(CustomerProfile, BigDecimal)` which enforces:
 - Fee amount ≤ $50.00
@@ -220,6 +220,7 @@ Non-functional targets (to be confirmed by measurement): added latency per gated
 | 2026-11-19 | Update | Compose file name (`compose.yaml`); implementation status of every requirement is tracked in design.md §8 |
 | 2026-11-21 | Scope | Added decision-model screening/triage/grading to Out-of-Scope as a production scale-up item, per design.md §6. Added §6 Future Requirements (FR-F1 to FR-F6, planned only), per design.md §9 |
 | 2026-11-24 | Scope | Added Requirement 9 (FR-9.1 to FR-9.3): actions through Kafka, read-only source data, idempotent system-of-record writer; implemented, verified per design.md §8 |
+| 2026-11-24 | Scope | FR-5.1: a waiver amount must be an unpaid late fee on the ledger (found live in agent planner mode) |
 | 2026-11-24 | Scope | Added FR-6.6 (multi-turn conversation memory; customer request for a person escalates in every mode) and the request-for-a-person trigger in FR-6.1; implemented, verified per design.md A8 |
 | 2026-11-23 | Scope | Added FR-6.5 (ticket status inquiry; escalation check enforced by Java in agent planner mode); implemented, verified per design.md §8 |
 | 2026-11-21 | Scope | Added FR-3.10 (multi-step billing investigation with fact verification); implemented, verified per design.md §8 |

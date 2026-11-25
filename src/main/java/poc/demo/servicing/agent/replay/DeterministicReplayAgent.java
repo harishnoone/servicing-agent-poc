@@ -501,8 +501,11 @@ public class DeterministicReplayAgent {
         if (ran && !humanRequestMissed) {
             return null;
         }
+        // A waiver that needs a supervisor (tenure too short) is forced, as in the deterministic plan.
+        boolean needsSupervisor = "TENURE_TOO_SHORT".equals(turnState.getLastWaiverReasonCode());
         EscalationTools.EscalationDecision esc = escalationTools.escalateWithSummary(
-                customerId, message, "AGENT_PLANNED", List.of("Escalation check enforced by Java after the model's plan"), false);
+                customerId, message, "AGENT_PLANNED", List.of("Escalation check enforced by Java after the model's plan"),
+                needsSupervisor);
         trace.record("AGENTIC_ESCALATION_ENFORCED: " + esc.reason());
         return esc.escalated() ? escalationSentence(esc) : null;
     }
